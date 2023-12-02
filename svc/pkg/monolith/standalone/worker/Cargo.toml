@@ -20,6 +20,7 @@ analytics-worker = { path = "../../../analytics/worker" }
 cdn-worker = { path = "../../../cdn/worker" }
 cf-custom-hostname-worker = { path = "../../../cf-custom-hostname/worker" }
 cloud-worker = { path = "../../../cloud/worker" }
+cluster-worker = { path = "../../../cluster/worker" }
 external-worker = { path = "../../../external/worker" }
 game-user-worker = { path = "../../../game-user/worker" }
 job-log-worker = { path = "../../../job-log/worker" }
