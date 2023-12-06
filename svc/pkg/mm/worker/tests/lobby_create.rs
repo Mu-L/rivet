@@ -1,5 +1,6 @@
 use chirp_worker::prelude::*;
 use proto::backend::{self, pkg::*};
+use std::collections::HashMap;
 
 struct Setup {
 	namespace_id: Uuid,
@@ -44,6 +45,8 @@ async fn setup(ctx: &TestCtx) -> Setup {
 				max_players_direct: 10,
 				max_players_party: 12,
 				listable: true,
+				taggable: false,
+				allow_dynamic_max_players: false,
 
 				runtime: Some(backend::matchmaker::lobby_runtime::Docker {
 					build_id: build_res.build_id,
@@ -104,6 +107,8 @@ async fn setup(ctx: &TestCtx) -> Setup {
 				max_players_direct: 10,
 				max_players_party: 12,
 				listable: true,
+				taggable: false,
+				allow_dynamic_max_players: false,
 
 				runtime: Some(backend::matchmaker::lobby_runtime::Docker {
 					build_id: build_res.build_id,
@@ -198,6 +203,8 @@ async fn lobby_create(ctx: TestCtx) {
 		is_custom: false,
 		publicity: None,
 		lobby_config_json: None,
+		tags: HashMap::new(),
+		dynamic_max_players: None,
 	})
 	.await
 	.unwrap();
@@ -239,6 +246,8 @@ async fn custom_private_lobby_create(ctx: TestCtx) {
 		is_custom: true,
 		publicity: Some(backend::matchmaker::lobby::Publicity::Private as i32),
 		lobby_config_json: Some(r#"{ "foo": "bar" }"#.to_string()),
+		tags: HashMap::new(),
+		dynamic_max_players: None,
 	})
 	.await
 	.unwrap();
@@ -298,6 +307,8 @@ async fn lobby_create_max_lobby_count(ctx: TestCtx) {
 			is_custom: false,
 			publicity: None,
 			lobby_config_json: None,
+			tags: HashMap::new(),
+			dynamic_max_players: None,
 		})
 		.await
 		.unwrap();
@@ -317,6 +328,8 @@ async fn lobby_create_max_lobby_count(ctx: TestCtx) {
 		is_custom: false,
 		publicity: None,
 		lobby_config_json: None,
+		tags: HashMap::new(),
+		dynamic_max_players: None,
 	})
 	.await
 	.unwrap();
@@ -347,6 +360,8 @@ async fn lobby_create_reuse_job_id(ctx: TestCtx) {
 		is_custom: false,
 		publicity: None,
 		lobby_config_json: None,
+		tags: HashMap::new(),
+		dynamic_max_players: None,
 	})
 	.await
 	.unwrap();
@@ -364,6 +379,8 @@ async fn lobby_create_reuse_job_id(ctx: TestCtx) {
 		is_custom: false,
 		publicity: None,
 		lobby_config_json: None,
+		tags: HashMap::new(),
+		dynamic_max_players: None,
 	})
 	.await
 	.unwrap();
@@ -432,6 +449,7 @@ async fn lobby_create_reuse_job_id(ctx: TestCtx) {
 // 			is_custom: false,
 // 			publicity: None,
 // 			lobby_config_json: None,
+// 			dynamic_max_players: None,
 // 		})
 // 		.await
 // 		.unwrap();

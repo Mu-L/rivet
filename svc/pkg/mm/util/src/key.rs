@@ -30,6 +30,11 @@ pub fn lobby_config(lobby_id: Uuid) -> String {
 	format!("{{global}}:mm:lobby:{}:config", lobby_id)
 }
 
+/// HASH
+pub fn lobby_tags(lobby_id: Uuid) -> String {
+	format!("{{global}}:mm:lobby:{}:tags", lobby_id)
+}
+
 pub mod lobby_config {
 	use uuid::Uuid;
 
@@ -191,6 +196,11 @@ pub fn lobby_unready() -> String {
 /// ZSET<lobby id, expire ts>
 pub fn player_unregistered() -> String {
 	format!("{{global}}:mm:player:unregistered")
+}
+
+/// ZSET<lobby id, expire ts>
+pub fn player_auto_remove() -> String {
+	format!("{{global}}:mm:player:auto_remove")
 }
 
 // Placeholder key

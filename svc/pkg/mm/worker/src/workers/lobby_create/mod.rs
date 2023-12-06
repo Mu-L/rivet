@@ -97,6 +97,14 @@ async fn worker(ctx: &OperationContext<mm::msg::lobby_create::Message>) -> Globa
 		}
 	}
 
+	// Override max player count
+	let max_players_normal = ctx
+		.dynamic_max_players
+		.unwrap_or(lobby_group.max_players_normal);
+	let max_players_direct = ctx
+		.dynamic_max_players
+		.unwrap_or(lobby_group.max_players_direct);
+
 	// Get the relevant lobby group region
 	let lobby_group_region = if let Some(x) = lobby_group
 		.regions
@@ -163,6 +171,8 @@ async fn worker(ctx: &OperationContext<mm::msg::lobby_create::Message>) -> Globa
 		publicity: ctx
 			.publicity
 			.and_then(backend::matchmaker::lobby::Publicity::from_i32),
+		max_players_normal,
+		max_players_direct,
 	};
 	rivet_pools::utils::crdb::tx(&crdb, |tx| {
 		let ctx = ctx.clone();
@@ -181,9 +191,9 @@ async fn worker(ctx: &OperationContext<mm::msg::lobby_create::Message>) -> Globa
 				namespace_id,
 				region_id,
 				lobby_group_id,
-				max_players_normal: lobby_group.max_players_normal,
+				max_players_normal,
+				max_players_direct,
 				max_players_party: lobby_group.max_players_party,
-				max_players_direct: lobby_group.max_players_direct,
 				preemptive: false,
 				is_closed: false,
 				ready_ts: None,
@@ -231,6 +241,8 @@ async fn worker(ctx: &OperationContext<mm::msg::lobby_create::Message>) -> Globa
 				&lobby_group_meta,
 				&region,
 				tier,
+				max_players_normal,
+				max_players_direct,
 				run_id,
 				lobby_id,
 				&lobby_token,
@@ -258,8 +270,8 @@ async fn worker(ctx: &OperationContext<mm::msg::lobby_create::Message>) -> Globa
 					"preemptively_created": ctx.preemptively_created,
 					"tier": tier.tier_name_id,
 					"max_players": {
-						"normal": lobby_group.max_players_normal,
-						"direct": lobby_group.max_players_direct,
+						"normal": max_players_normal,
+						"direct": max_players_direct,
 						"party": lobby_group.max_players_party,
 					},
 					"run_id": run_id,
@@ -469,6 +481,8 @@ struct UpdateDbOpts {
 	creator_user_id: Option<Uuid>,
 	is_custom: bool,
 	publicity: Option<backend::matchmaker::lobby::Publicity>,
+	max_players_normal: u32,
+	max_players_direct: u32,
 }
 
 #[tracing::instrument(skip_all)]
@@ -536,8 +550,8 @@ async fn update_db(
 		now,
 		opts.run_id,
 		opts.create_ray_id,
-		opts.lobby_group.max_players_normal as i64,
-		opts.lobby_group.max_players_direct as i64,
+		opts.max_players_normal as i64,
+		opts.max_players_direct as i64,
 		opts.lobby_group.max_players_party as i64,
 		opts.creator_user_id,
 		opts.is_custom,
@@ -560,6 +574,8 @@ async fn create_docker_job(
 	lobby_group_meta: &backend::matchmaker::LobbyGroupMeta,
 	region: &backend::region::Region,
 	tier: &backend::region::Tier,
+	max_players_normal: u32,
+	max_players_direct: u32,
 	run_id: Uuid,
 	lobby_id: Uuid,
 	lobby_token: &str,
@@ -591,7 +607,8 @@ async fn create_docker_job(
 		runtime,
 		&build.image_tag,
 		tier,
-		ctx.lobby_config_json.as_ref(),
+		ctx.lobby_config_json.is_some(),
+		!ctx.tags.is_empty(),
 		build_kind,
 		build_compression,
 	)?;
@@ -689,6 +706,10 @@ async fn create_docker_job(
 				value: ctx.lobby_config_json.clone().unwrap_or_default(),
 			},
 			job_run::msg::create::Parameter {
+				key: "lobby_tags".into(),
+				value: serde_json::to_string(&ctx.tags)?,
+			},
+			job_run::msg::create::Parameter {
 				key: "region_id".into(),
 				value: region_id.to_string(),
 			},
@@ -698,11 +719,11 @@ async fn create_docker_job(
 			},
 			job_run::msg::create::Parameter {
 				key: "max_players_normal".into(),
-				value: lobby_group.max_players_normal.to_string(),
+				value: max_players_normal.to_string(),
 			},
 			job_run::msg::create::Parameter {
 				key: "max_players_direct".into(),
-				value: lobby_group.max_players_direct.to_string(),
+				value: max_players_direct.to_string(),
 			},
 			job_run::msg::create::Parameter {
 				key: "max_players_party".into(),

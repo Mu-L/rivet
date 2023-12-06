@@ -791,9 +791,20 @@ fn build_ingress_router(
 	router: &ServiceRouter,
 	specs: &mut Vec<serde_json::Value>,
 ) {
+	// Filter mounts
+	let enable_deprecated_subdomains = project_ctx
+		.ns()
+		.dns
+		.as_ref()
+		.map_or(false, |y| y.deprecated_subdomains);
+	let mounts = router
+		.mounts
+		.iter()
+		.filter(|x| !x.deprecated || enable_deprecated_subdomains);
+
 	// Register all mounts with Traefik
 	// TODO: move this in to a single ingressroute crd for web and websecure
-	for (i, mount) in router.mounts.iter().enumerate() {
+	for (i, mount) in mounts.enumerate() {
 		// Build host rule
 		let mut rule = String::new();
 
@@ -815,32 +826,35 @@ fn build_ingress_router(
 		let mut middlewares = Vec::new();
 
 		// Build path
-		if let Some(path) = &mount.path {
-			if !rule.is_empty() {
-				rule.push_str(" && ");
-			}
-
-			rule.push_str(&format!("PathPrefix(`{path}`)"));
-
-			let mw_name = format!("{}-{i}-strip-prefix", svc_ctx.name());
-			middlewares.push(json!({
-				"apiVersion": "traefik.io/v1alpha1",
-				"kind": "Middleware",
-				"metadata": {
-					"name": mw_name,
-					"namespace": "rivet-service",
-					"labels": {
-						"traefik-instance": "main"
-					}
-				},
-				"spec": {
-					"stripPrefix": {
-						"prefixes": [ path ],
-						"forceSlash": true
-					}
-				}
-			}));
+		if !rule.is_empty() {
+			rule.push_str(" && ");
 		}
+
+		let path = match &mount.path {
+			Some(path) => path,
+			None => "/",
+		};
+
+		rule.push_str(&format!("PathPrefix(`{path}`)"));
+
+		let mw_name = format!("{}-{i}-strip-prefix", svc_ctx.name());
+		middlewares.push(json!({
+			"apiVersion": "traefik.io/v1alpha1",
+			"kind": "Middleware",
+			"metadata": {
+				"name": mw_name,
+				"namespace": "rivet-service",
+				"labels": {
+					"traefik-instance": "main"
+				}
+			},
+			"spec": {
+				"stripPrefix": {
+					"prefixes": [ path ],
+					"forceSlash": true
+				}
+			}
+		}));
 
 		if let Some(add_path) = &mount.add_path {
 			let mw_name = format!("{}-{i}-add-prefix", svc_ctx.name());

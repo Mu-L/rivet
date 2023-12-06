@@ -10,6 +10,13 @@ local key_find_query_state = KEYS[1]
 local key_find_query_player_ids = KEYS[2]
 local key_ns_player_ids = KEYS[3]
 local key_player_unregistered = KEYS[4]
+local key_player_auto_remove = KEYS[5]
+
+-- Extract names into list
+local query_tag_names = {}
+for tag_name, _ in pairs(query.tags) do
+	query_tag_names[#query_tag_names + 1] = tag_name
+end
 
 -- MARK: Find
 local lobby_id = nil
@@ -43,7 +50,7 @@ if query.kind.direct ~= nil then
 
 	-- Validate player count
 	local player_count = redis.call('ZCARD', key_direct_lobby_player_ids)
-	if player_count + table.getn(query.players) > max_player_count then
+	if player_count + #query.players > max_player_count then
 		return { 'err', 'LOBBY_FULL' }
 	end
 
@@ -58,22 +65,63 @@ elseif query.kind.lobby_group ~= nil then
 	for i = 1, available_spots_key_count do
 		local key_available_spots = KEYS[available_spots_key_idx + i]
 
-		-- Find the lobby with the least available spots (i.e. the most full lobby)
-		--
-		-- We always use `max_players_normal` when finding lobby groups
-		-- instead of `max_players_party` because `max_players_party` is
-		-- only relevant when joining a lobby with the exact lobby ID (i.e.
-		-- where `max_players_direct` would normally be used).
-		local lobby = redis.call('ZRANGEBYSCORE', key_available_spots, table.getn(query.players), '+inf', 'WITHSCORES',
-			'LIMIT', '0', '1')
-		if table.getn(lobby) > 0 then
-			local lobby_id = lobby[1]
-			local available_spots = tonumber(lobby[2])
+		-- No lobby tags, continue normally
+		if #query_tag_names == 0 then
+			-- Find the lobby with the least available spots (i.e. the most full lobby)
+			--
+			-- We always use `max_players_normal` when finding lobby groups
+			-- instead of `max_players_party` because `max_players_party` is
+			-- only relevant when joining a lobby with the exact lobby ID (i.e.
+			-- where `max_players_direct` would normally be used).
+			local lobby = redis.call('ZRANGEBYSCORE', key_available_spots, #query.players, '+inf',
+				'WITHSCORES', 'LIMIT', '0', '1')
 
-			-- Set as best lobby if no lobby selected or lobby is more full
-			if best_lobby_id == nil or available_spots < best_available_spots then
-				best_lobby_id = lobby_id
-				best_available_spots = available_spots
+			if #lobby > 0 then
+				local lobby_id = lobby[1]
+				local available_spots = tonumber(lobby[2])
+				
+				-- Set as best lobby if no lobby selected or lobby is more full
+				if best_lobby_id == nil or available_spots < best_available_spots then
+					best_lobby_id = lobby_id
+					best_available_spots = available_spots
+				end
+			end
+		else
+			-- Max iteration count is 128 to prevent spinning
+			local MAX_LOBBY_COUNT = 128
+
+			-- With lobby tags we need to query each available spots key multiple times until we find a
+			-- lobby that matches
+			local lobbies = redis.call('ZRANGEBYSCORE', key_available_spots, #query.players, '+inf',
+				'WITHSCORES', 'LIMIT', '0', tostring(MAX_LOBBY_COUNT))
+
+			for i = 1, #lobbies, 2 do
+				local lobby_id = lobbies[i]
+				local available_spots = tonumber(lobbies[i + 1])
+				local correct_tags = 0
+
+				-- Fetch specified lobby tags
+				local key_lobby_tags = '{global}:mm:lobby:' .. lobby_id .. ':tags'
+				local lobby_tags = redis.call('HMGET', key_lobby_tags, unpack(query_tag_names))
+						
+				-- Check that all tags are correct
+				for tag_idx, tag in ipairs(lobby_tags) do
+					if query.tags[query_tag_names[tag_idx]] ~= tag then
+						break
+					end
+	
+					correct_tags = correct_tags + 1
+				end
+		
+				-- Check if the correct number of tags have been parsed
+				if correct_tags == #query_tag_names and
+					(best_lobby_id == nil or available_spots < best_available_spots)
+				then
+					best_lobby_id = lobby_id
+					best_available_spots = available_spots
+
+					break
+				end
 			end
 		end
 	end
@@ -90,9 +138,14 @@ elseif query.kind.lobby_group ~= nil then
 		local key_auto_create_ns_lobby_ids = KEYS[query_kind_key_idx + 3]
 		local key_auto_create_lobby_available_spots_normal = KEYS[query_kind_key_idx + 4]
 		local key_auto_create_lobby_available_spots_party = KEYS[query_kind_key_idx + 5]
+		local key_auto_create_lobby_tags = KEYS[query_kind_key_idx + 6]
 
 		for k, v in pairs(auto_create.lobby_config) do
 			redis.call('HSET', key_auto_create_lobby_config, k, tostring(v))
+		end
+
+		for k, v in pairs(query.tags) do
+			redis.call('HSET', key_auto_create_lobby_tags, k, v)
 		end
 
 		redis.call('ZADD', key_auto_create_ns_lobby_ids, ts, auto_create.lobby_id)
@@ -101,7 +154,6 @@ elseif query.kind.lobby_group ~= nil then
 		redis.call('ZADD', key_auto_create_lobby_available_spots_party, auto_create.lobby_config['mpp'],
 			auto_create.lobby_id)
 		redis.call('ZADD', key_lobby_unready, tonumber(auto_create.ready_expire_ts), auto_create.lobby_id)
-		
 	end
 
 	-- Determine lobby ID to use
@@ -112,7 +164,6 @@ elseif query.kind.lobby_group ~= nil then
 	else
 		return { 'err', 'NO_AVAILABLE_LOBBIES' }
 	end
-
 else
 	return redis.error_reply('Invalid query kind')
 end
@@ -139,13 +190,13 @@ local max_players_party = tonumber(redis.call('HGET', key_lobby_config, 'mpp'))
 local key_lobby_find_queries = '{global}:mm:lobby:' .. lobby_id .. ':find_queries'
 local key_lobby_player_ids = '{global}:mm:lobby:' .. lobby_id .. ':player_ids'
 local key_lobby_available_spots_normal = '{global}:mm:ns:' ..
-namespace_id .. ':region:' .. region_id .. ':lg:' .. lobby_group_id .. ':lobby:available_spots:normal'
+	namespace_id .. ':region:' .. region_id .. ':lg:' .. lobby_group_id .. ':lobby:available_spots:normal'
 local key_lobby_available_spots_party = '{global}:mm:ns:' ..
-namespace_id .. ':region:' .. region_id .. ':lg:' .. lobby_group_id .. ':lobby:available_spots:party'
+	namespace_id .. ':region:' .. region_id .. ':lg:' .. lobby_group_id .. ':lobby:available_spots:party'
 local key_idle_lobby_ids = '{global}:mm:ns:' ..
-namespace_id .. ':region:' .. region_id .. ':lg:' .. lobby_group_id .. ':idle_lobby_ids'
+	namespace_id .. ':region:' .. region_id .. ':lg:' .. lobby_group_id .. ':idle_lobby_ids'
 local key_idle_lobby_lobby_group_ids = '{global}:mm:ns:' ..
-namespace_id .. ':region:' .. region_id .. ':lobby:idle:lobby_group_ids'
+	namespace_id .. ':region:' .. region_id .. ':lobby:idle:lobby_group_ids'
 
 -- Assert lobby state
 if #lobby_id ~= 36 then
@@ -184,6 +235,7 @@ for i, player in ipairs(query.players) do
 	redis.call('ZADD', key_ns_player_ids, ts, player_id)
 	redis.call('ZADD', key_lobby_player_ids, ts, player_id)
 	redis.call('ZADD', key_player_unregistered, query.player_register_expire_ts, player_id)
+	redis.call('ZADD', key_player_auto_remove, query.player_auto_remove_ts, player_id)
 	if player.remote_address ~= nil then
 		redis.call('SADD', key_ns_remote_address_player_ids, player_id)
 	end

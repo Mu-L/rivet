@@ -5,10 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [23.2.0-rc1] - 2023-12-01
 
 ### Added
 
+-   **Infra** Lobby tagging system for filtering lobbies in `/find`
+-   **Infra** Dynamically configurable max player count in `/find` and `/create`
 -   **Bolt** Added `bolt admin login` to allow for logging in without an email provider setup. Automatically turns the user into an admin for immediate access to the developer dashboard.
 -   **Bolt** Fixed `bolt db migrate create`
 -   **Infra** Added `user-admin-set` service for creating an admin user
@@ -18,12 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 -   **Bolt** Removed `bolt admin team-dev create`. You can use `bolt admin login` and the hub to create a new dev team
 -   **Infra** Turnstile `CAPTCHA_CAPTCHA_REQUIRED` responses now include a site key
 -   **Infra** Turnstile is no longer configurable by domain (instead configured by Turnstile itself)
--   **Infra** Fixed /list not returning lobbies unless the `include_state` query parameter was true
--   **Infra** Job log aggregating to use Vector under the hood to insert directly in to ClickHouse
+-   **Infra** Job log aggregating to use Vector under the hood to insert directly into ClickHouse
+-   **Matchmaker** Players automatically remove after extended periods of time to account for network failures
 
 ### Fixed
 
 -   **Infra** Job logs occasionally returning duplicate log lines
+-   **Matchmaker** /list returning no lobbies unless `include_state` query parameter is `true`
+-   **Matchmaker** Players remove correctly when the player fails to be inserted into the Cockroach database and only exists in Redis
 
 ## [23.1.0] - 2023-10-30
 
