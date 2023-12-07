@@ -1,5 +1,1 @@
-chirp_worker::workers![
-	cleanup,
-	create,
-	stop,
-];
+chirp_worker::workers![cleanup, create, stop,];
