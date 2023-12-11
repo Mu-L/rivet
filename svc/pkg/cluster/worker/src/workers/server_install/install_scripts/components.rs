@@ -8,7 +8,7 @@ use s3_util::Provider;
 use super::ServerCtx;
 
 pub fn common() -> String {
-	vec![
+	[
 		format!("apt-get update -y"),
 		format!("apt-get install -y apt-transport-https ca-certificates gnupg2 software-properties-common curl jq unzip"),
 	].join("\n")
@@ -59,8 +59,10 @@ pub fn nomad(server: &ServerCtx) -> String {
 	let servers = &["127.0.0.1:5000"];
 
 	include_str!("files/nomad.sh")
-		.replace("__REGION_ID__", &server.universal_region_str)
 		.replace("__NODE_NAME__", &server.name)
+		.replace("__SERVER_ID__", &server.server_id.to_string())
+		.replace("__DATACENTER_ID__", &server.datacenter_id.to_string())
+		.replace("__CLUSTER_ID__", &server.cluster_id.to_string())
 		// HACK: Hardcoded to Linode
 		.replace("__PUBLIC_IFACE__", "eth0")
 		.replace("__VLAN_IP__", &server.vlan_ip.to_string())
@@ -362,7 +364,7 @@ pub async fn traffic_server(server: &ServerCtx) -> GlobalResult<String> {
 	Ok(script)
 }
 
-static traffic_server_config_dir: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/workers/server_install/install_scripts/files/traffic_server");
+static TRAFFIC_SERVER_CONFIG_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/workers/server_install/install_scripts/files/traffic_server");
 
 async fn traffic_server_config(
 	server: &ServerCtx,
@@ -370,7 +372,7 @@ async fn traffic_server_config(
 
 	// Static files
 	let mut config_files = Vec::<(String, String)>::new();
-	for entry in traffic_server_config_dir.entries() {
+	for entry in TRAFFIC_SERVER_CONFIG_DIR.entries() {
 		if let Some(file) = entry.as_file() {
 			let key = unwrap!(
 				unwrap!(file
