@@ -12,10 +12,6 @@ pub struct Namespace {
 	pub cluster: Cluster,
 	#[serde(default)]
 	pub secrets: Secrets,
-	#[serde(default = "default_regions")]
-	pub regions: HashMap<String, Region>,
-	#[serde(default)]
-	pub pools: Vec<Pool>,
 	#[serde(default)]
 	pub terraform: Terraform,
 	pub dns: Option<Dns>,
@@ -98,42 +94,6 @@ impl Default for Secrets {
 	fn default() -> Self {
 		Self::File { path: None }
 	}
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct Region {
-	#[serde(default)]
-	pub primary: bool,
-	pub id: String,
-	pub provider: String,
-	pub provider_region: String,
-	pub netnum: usize,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct Pool {
-	pub pool: String,
-	pub version: String,
-	pub region: String,
-	pub count: usize,
-	pub size: String,
-	#[serde(default)]
-	pub volumes: HashMap<String, Volume>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct Volume {
-	pub size: usize,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub enum ProviderKind {
-	#[serde(rename = "linode")]
-	Linode {},
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -543,7 +503,7 @@ pub struct Rivet {
 	#[serde(default)]
 	pub upload: Upload,
 	#[serde(default)]
-	pub dynamic_servers: DynamicServers,
+	pub dynamic_servers: Option<DynamicServers>,
 	#[serde(default)]
 	pub cdn: Cdn,
 }
@@ -609,11 +569,12 @@ pub struct Upload {
 	pub nsfw_error_verbose: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct DynamicServers {
 	#[serde(default)]
 	pub build_delivery_method: DynamicServersBuildDeliveryMethod,
+	pub cluster: DynamicServersCluster,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, strum_macros::Display)]
@@ -629,6 +590,55 @@ pub enum DynamicServersBuildDeliveryMethod {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
+pub struct DynamicServersCluster {
+	name_id: String,
+	#[serde(default)]
+	datacenters: HashMap<String, DynamicServersDatacenter>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicServersDatacenter {
+	display_name: String,
+	hardware: Vec<DynamicServersDatacenterHardware>,
+	provider: DynamicServersProvider,
+	provider_datacenter_name: String,
+	drain_timeout: u32,
+
+	#[serde(default)]
+	pools: HashMap<DynamicServersDatacenterPoolType, DynamicServersDatacenterPool>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum DynamicServersProvider {
+	#[serde(rename = "linode")]
+	Linode,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicServersDatacenterHardware {
+	name: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicServersDatacenterPool {
+	desired_count: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DynamicServersDatacenterPoolType {
+	#[serde(rename = "job")]
+	Job,
+	#[serde(rename = "gg")]
+	Gg,
+	#[serde(rename = "ats")]
+	Ats,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct Cdn {
 	pub cache_size_gb: usize,
 }
@@ -637,11 +647,6 @@ impl Default for Cdn {
 	fn default() -> Self {
 		Cdn { cache_size_gb: 10 }
 	}
-}
-
-fn default_regions() -> HashMap<String, Region> {
-	toml::from_str(include_str!("../default_regions.toml"))
-		.expect("failed to parse default_regions.toml")
 }
 
 fn default_docker_repo() -> String {

@@ -101,7 +101,7 @@ async fn gg_traefik_static_config(server: &ServerCtx) -> GlobalResult<String> {
 	let api_route_token = &util::env::read_secret(&["rivet", "api_route", "token"]).await?;
 	let http_provider_endpoint = format!(
 		"http://127.0.0.1:5001/traefik/config/game-guard?token={api_route_token}&datacenter={datacenter}",
-		datacenter = server.datacenter_id
+		datacenter = server.datacenter_id,
 	);
 
 	let mut config = formatdoc!(

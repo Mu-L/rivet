@@ -1,6 +1,8 @@
+use uuid::Uuid;
+
 /// Reads a secret from the env.
 ///
-/// This is marked as async so we have the flexiblity to pull the secret from remote datasources.
+/// This is marked as async so we have the flexibility to pull the secret from remote datasources.
 pub async fn read_secret(key: &[impl AsRef<str>]) -> Result<String, std::env::VarError> {
 	std::env::var(secret_env_var_key(key))
 }
@@ -55,8 +57,6 @@ lazy_static::lazy_static! {
 	static ref RUN_CONTEXT: Option<RunContext> = std::env::var("RIVET_RUN_CONTEXT")
 		.ok()
 		.and_then(|ctx| RunContext::from_str(&ctx));
-	static ref REGION: Option<String> = std::env::var("RIVET_REGION").ok();
-	static ref PRIMARY_REGION: Option<String> = std::env::var("RIVET_PRIMARY_REGION").ok();
 	static ref NAMESPACE: Option<String> = std::env::var("RIVET_NAMESPACE").ok();
 	static ref CLUSTER_ID: Option<String> = std::env::var("RIVET_CLUSTER_ID").ok();
 	static ref SOURCE_HASH: Option<String> = std::env::var("RIVET_SOURCE_HASH").ok();
@@ -78,12 +78,10 @@ lazy_static::lazy_static! {
 		.unwrap_or_default();
 }
 
-pub fn region() -> &'static str {
-	match &*REGION {
-		Some(x) => x.as_str(),
-		None => panic!("RIVET_REGION"),
-	}
+pub fn default_cluster_id() -> Uuid {
+	Uuid::nil()
 }
+
 
 /// The namespace this service is running in. This is derived from the `NAMESPACE` environment
 /// variable.
@@ -153,13 +151,6 @@ pub fn origin_hub() -> &'static str {
 
 pub fn dns_provider() -> Option<&'static str> {
 	DNS_PROVIDER.as_ref().map(|x| x.as_str())
-}
-
-pub fn primary_region() -> &'static str {
-	match &*PRIMARY_REGION {
-		Some(x) => x.as_str(),
-		None => panic!("RIVET_PRIMARY_REGION"),
-	}
 }
 
 pub fn chirp_service_name() -> &'static str {

@@ -136,7 +136,7 @@ impl ProjectContextData {
 		// MARK: Pools
 		if self.ns().dns.is_none() {
 			assert!(
-				self.ns().pools.is_empty(),
+				self.ns().rivet.dynamic_servers.is_none(),
 				"must have dns configured to provision servers"
 			);
 			assert!(
@@ -164,62 +164,6 @@ impl ProjectContextData {
 					9000, minio_port,
 					"minio_port must not be changed if dns enabled"
 				)
-			}
-		}
-
-		// MARK: Dynamic Servers
-		// Validate the build delivery method
-		if !self.ns().pools.is_empty() {
-			let ats_count = self.ns().pools.iter().filter(|p| p.pool == "ats").count();
-			match self.ns().rivet.dynamic_servers.build_delivery_method {
-				config::ns::DynamicServersBuildDeliveryMethod::TrafficServer => {
-					assert_ne!(ats_count, 0, "TrafficServer delivery method will not work without ats servers in each region. either set rivet.dynamic_servers.build_delivery_method = \"S3Direct\" to download builds directly from S3 or add an ATS pool to each region.");
-				}
-				config::ns::DynamicServersBuildDeliveryMethod::S3Direct => {
-					assert_eq!(
-						ats_count, 0,
-						"S3Direct delivery method should not be used if ats servers are available"
-					);
-				}
-			}
-		}
-
-		// MARK: Pools
-		for region_id in self.ns().regions.keys() {
-			// Skip empty regions
-			if !self.ns().pools.iter().any(|p| p.region == *region_id) {
-				continue;
-			}
-
-			// Validate all required pools exist
-			assert!(
-				self.ns()
-					.pools
-					.iter()
-					.any(|p| p.pool == "gg" && p.region == *region_id),
-				"missing gg pool for region {region_id}",
-				region_id = region_id
-			);
-			assert!(
-				self.ns()
-					.pools
-					.iter()
-					.any(|p| p.pool == "job" && p.region == *region_id),
-				"missing job pool for region {region_id}",
-				region_id = region_id
-			);
-			if matches!(
-				self.ns().rivet.dynamic_servers.build_delivery_method,
-				config::ns::DynamicServersBuildDeliveryMethod::TrafficServer
-			) {
-				assert!(
-					self.ns()
-						.pools
-						.iter()
-						.any(|p| p.pool == "ats" && p.region == *region_id),
-					"missing ats pool for region {region_id}",
-					region_id = region_id
-				);
 			}
 		}
 	}
@@ -345,8 +289,20 @@ impl ProjectContextData {
 			"failed to read namespace config: {}",
 			path.display()
 		));
-		let config = toml::from_str::<config::ns::Namespace>(&config_str)
-			.expect("failed to parse namespace config");
+		let config = match toml::from_str::<config::ns::Namespace>(&config_str) {
+			Result::Ok(x) => x,
+			Result::Err(err) => {
+				if let Some(span) = err.span() {
+					panic!(
+						"failed to parse namespace config ({:?}): {}",
+						span,
+						err.message()
+					);
+				} else {
+					panic!("failed to parse namespace config: {}", err.message());
+				}
+			}
+		};
 
 		// Verify s3 config
 		if config.s3.providers.minio.is_none()
@@ -802,30 +758,6 @@ impl ProjectContextData {
 		match &self.ns().cluster.kind {
 			config::ns::ClusterKind::SingleNode { .. } => 1,
 			config::ns::ClusterKind::Distributed { .. } => 3,
-		}
-	}
-
-	/// Returns the region which contains the core cluster.
-	///
-	/// Seldom used in services. Only used to specify the CDN region at the
-	/// moment, but that will be deprecated later.
-	pub fn primary_region(&self) -> String {
-		self.ns()
-			.regions
-			.iter()
-			.find(|(_, x)| x.primary)
-			.map(|(x, _)| x.clone())
-			.expect("missing primary region")
-	}
-
-	/// Species the region or returns "local" for local development.
-	///
-	/// This is useful for deploying Nomad services from Bolt to know which
-	/// region to connect to.
-	pub fn primary_region_or_local(&self) -> String {
-		match &self.ns().cluster.kind {
-			config::ns::ClusterKind::SingleNode { .. } => "local".to_string(),
-			config::ns::ClusterKind::Distributed { .. } => self.primary_region(),
 		}
 	}
 }

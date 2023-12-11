@@ -20,5 +20,5 @@ pub fn fly() -> bool {
 }
 
 pub fn job_run() -> bool {
-	std::env::var("RIVET_HAS_POOLS").ok().is_some()
+	std::env::var("RIVET_DEFAULT_CLUSTER_CONFIG").ok().is_some()
 }

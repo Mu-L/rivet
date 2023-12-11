@@ -9715,9 +9715,6 @@ components:
         provider:
           type: string
           description: The server provider of this region.
-        universal_region:
-          $ref: '#/components/schemas/CloudUniversalRegion'
-          description: A universal region label given to this region.
         provider_display_name:
           type: string
           description: Represent a resource's readable display name.
@@ -9728,7 +9725,6 @@ components:
         - region_id
         - region_name_id
         - provider
-        - universal_region
         - provider_display_name
         - region_display_name
     CloudGroupBillingSummary:

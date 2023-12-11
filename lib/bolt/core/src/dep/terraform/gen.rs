@@ -220,15 +220,6 @@ async fn vars(ctx: &ProjectContext) {
 		}
 	}
 
-	// Regions
-	vars.insert(
-		"primary_region".into(),
-		json!(ctx.primary_region_or_local()),
-	);
-
-	let regions = super::regions::build_regions(&ctx).unwrap();
-	vars.insert("regions".into(), json!(&regions));
-
 	// Tunnels
 	if let Some(ns::Dns {
 		provider: Some(ns::DnsProvider::Cloudflare { access, .. }),
