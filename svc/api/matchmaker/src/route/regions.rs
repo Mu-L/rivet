@@ -17,7 +17,7 @@ pub async fn list(
 	if ctx.auth().game_ns_dev_option()?.is_some() {
 		return Ok(models::ListRegionsResponse {
 			regions: vec![models::RegionInfo {
-				region_id: util::env::region().into(),
+				region_id: "local".into(),
 				provider_display_name: "Your Computer".into(),
 				region_display_name: "Local".into(),
 				datacenter_coord: models::Coord {

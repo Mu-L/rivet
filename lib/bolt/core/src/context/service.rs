@@ -692,8 +692,6 @@ impl ServiceContextData {
 			.recursive_dependencies(&[self.name()], run_context)
 			.await
 			.into_iter()
-			// Filter filter services to include only operations, since these run in-process
-			.filter(|x| **x == *self || matches!(x.config().kind, ServiceKind::Operation { .. }))
 			// Aggregate secrets from all dependencies
 			.flat_map(|x| x.config().secrets.clone().into_iter())
 			// Convert keys to string array

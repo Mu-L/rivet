@@ -1,4 +1,4 @@
-use std::{env, collections::HashMap};
+use std::{collections::HashMap, env};
 
 use chirp_worker::prelude::*;
 use include_dir::{include_dir, Dir};
@@ -76,8 +76,14 @@ pub fn nomad(server: &ServerCtx) -> String {
 				.collect::<Vec<_>>()
 				.join(", "),
 		)
-		.replace("__GG_VLAN_SUBNET__", &util::net::gg::vlan_ip_net().to_string())
-		.replace("__ATS_VLAN_SUBNET__", &util::net::ats::vlan_ip_net().to_string())
+		.replace(
+			"__GG_VLAN_SUBNET__",
+			&util::net::gg::vlan_ip_net().to_string(),
+		)
+		.replace(
+			"__ATS_VLAN_SUBNET__",
+			&util::net::ats::vlan_ip_net().to_string(),
+		)
 }
 
 /// Installs Traefik, but does not create the Traefik service.
@@ -208,8 +214,7 @@ pub fn traefik_instance(config: TraefikInstance) -> String {
 
 const TUNNEL_SERVICES: &[&str] = &["nomad", "api-route", "vector"];
 
-pub fn traefik_tunnel(
-) -> GlobalResult<String> {
+pub fn traefik_tunnel() -> GlobalResult<String> {
 	// Build transports for each service
 	let mut tcp_server_transports = HashMap::new();
 	for service in TUNNEL_SERVICES {
@@ -217,13 +222,11 @@ pub fn traefik_tunnel(
 			service.to_string(),
 			ServerTransport {
 				server_name: format!("{service}.tunnel.rivet.gg"),
-				root_cas: vec![env::var("TLS_ROOT_CA_CERT_PEM")?],
-				certs: vec![
-					TlsCert {
-						cert_pem: env::var("TLS_CERT_LOCALLY_SIGNED_JOB_CERT_PEM")?,
-						key_pem: env::var("TLS_CERT_LOCALLY_SIGNED_JOB_KEY_PEM")?,
-					},
-				],
+				root_cas: vec![util::env::var("TLS_ROOT_CA_CERT_PEM")?],
+				certs: vec![TlsCert {
+					cert_pem: util::env::var("TLS_CERT_LOCALLY_SIGNED_JOB_CERT_PEM")?,
+					key_pem: util::env::var("TLS_CERT_LOCALLY_SIGNED_JOB_KEY_PEM")?,
+				}],
 			},
 		);
 	}
@@ -231,7 +234,7 @@ pub fn traefik_tunnel(
 	Ok(traefik_instance(TraefikInstance {
 		name: "tunnel".into(),
 		static_config: tunnel_traefik_static_config(),
-		dynamic_config: tunnel_traefik_dynamic_config(&env::var("K8S_TRAEFIK_TUNNEL_EXTERNAL_IP")?),
+		dynamic_config: tunnel_traefik_dynamic_config(&util::env::var("K8S_TRAEFIK_TUNNEL_EXTERNAL_IP")?),
 		tls_certs: Default::default(),
 		tcp_server_transports,
 	}))
@@ -364,25 +367,17 @@ pub async fn traffic_server(server: &ServerCtx) -> GlobalResult<String> {
 	Ok(script)
 }
 
-static TRAFFIC_SERVER_CONFIG_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/workers/server_install/install_scripts/files/traffic_server");
+static TRAFFIC_SERVER_CONFIG_DIR: Dir<'_> = include_dir!(
+	"$CARGO_MANIFEST_DIR/src/workers/server_install/install_scripts/files/traffic_server"
+);
 
-async fn traffic_server_config(
-	server: &ServerCtx,
-) -> GlobalResult<Vec<(String, String)>> {
-
+async fn traffic_server_config(server: &ServerCtx) -> GlobalResult<Vec<(String, String)>> {
 	// Static files
 	let mut config_files = Vec::<(String, String)>::new();
 	for entry in TRAFFIC_SERVER_CONFIG_DIR.entries() {
 		if let Some(file) = entry.as_file() {
-			let key = unwrap!(
-				unwrap!(file
-					.path()
-					.file_name()
-				)
-				.to_str()
-			)
-			.to_string();
-			
+			let key = unwrap!(unwrap!(file.path().file_name()).to_str()).to_string();
+
 			let value = unwrap!(file.contents_utf8());
 			let value = value.replace("__VLAN_IP__", &server.vlan_ip.to_string());
 			config_files.push((key, value));
@@ -405,8 +400,7 @@ async fn traffic_server_config(
 		config_files.extend(output.config_files);
 	}
 	if s3_util::s3_provider_active("bucket-build", Provider::Backblaze) {
-		let output =
-			gen_s3_provider(Provider::Backblaze, default_s3_provider).await?;
+		let output = gen_s3_provider(Provider::Backblaze, default_s3_provider).await?;
 		remap.push_str(&output.append_remap);
 		config_files.extend(output.config_files);
 	}
@@ -448,9 +442,7 @@ async fn gen_s3_provider(
 
 	// Add default route
 	if default_s3_provider == provider {
-		remap.push_str(&format!(
-			"map /s3-cache {endpoint_external} {plugins}\n",
-		));
+		remap.push_str(&format!("map /s3-cache {endpoint_external} {plugins}\n",));
 	}
 
 	// Add credentials
@@ -483,4 +475,3 @@ async fn gen_s3_provider(
 		config_files,
 	})
 }
-

@@ -1,22 +1,31 @@
 use uuid::Uuid;
 
+#[derive(Debug, thiserror::Error)]
+pub enum EnvVarError {
+	#[error("missing env var: {0}")]
+	Missing(String),
+
+	#[error("{0}")]
+	Invalid(std::env::VarError),
+}
+
 /// Reads a secret from the env.
 ///
 /// This is marked as async so we have the flexibility to pull the secret from remote datasources.
-pub async fn read_secret(key: &[impl AsRef<str>]) -> Result<String, std::env::VarError> {
-	std::env::var(secret_env_var_key(key))
+pub async fn read_secret(key: &[impl AsRef<str>]) -> Result<String, EnvVarError> {
+	var(secret_env_var_key(key))
 }
 
 pub async fn read_secret_opt(
 	key: &[impl AsRef<str>],
-) -> Result<Option<String>, std::env::VarError> {
+) -> Result<Option<String>, EnvVarError> {
 	let env_var = read_secret(key).await;
 
 	match env_var {
 		Ok(v) => Ok(Some(v)),
 		Err(var_error) => match var_error {
-			std::env::VarError::NotPresent => Ok(None),
-			std::env::VarError::NotUnicode(_) => Err(var_error),
+			EnvVarError::Missing(_) => Ok(None),
+			EnvVarError::Invalid(_) => Err(var_error),
 		},
 	}
 }
@@ -27,6 +36,18 @@ pub fn secret_env_var_key(key: &[impl AsRef<str>]) -> String {
 		.map(|x| x.as_ref().to_uppercase())
 		.collect::<Vec<_>>()
 		.join("_")
+}
+
+pub fn var(name: impl AsRef<str>) -> Result<String, EnvVarError> {
+	let env_var = std::env::var(name.as_ref());
+	
+	match env_var {
+		Ok(v) => Ok(v),
+		Err(var_error) => match var_error {
+			std::env::VarError::NotPresent => Err(EnvVarError::Missing(name.as_ref().to_string())),
+			_ => Err(EnvVarError::Invalid(var_error)),
+		},
+	}
 }
 
 /// Where this code is being written from. This is derived from the `RIVET_RUN_CONTEXT` environment
@@ -88,14 +109,14 @@ pub fn default_cluster_id() -> Uuid {
 pub fn namespace() -> &'static str {
 	match &*NAMESPACE {
 		Some(x) => x.as_str(),
-		None => panic!("RIVET_NAMESPACE"),
+		None => panic!("{}", EnvVarError::Missing("RIVET_NAMESPACE".to_string())),
 	}
 }
 
 pub fn cluster_id() -> &'static str {
 	match &*CLUSTER_ID {
 		Some(x) => x.as_str(),
-		None => panic!("RIVET_CLUSTER_ID"),
+		None => panic!("{}", EnvVarError::Missing("RIVET_CLUSTER_ID".to_string())),
 	}
 }
 
@@ -103,7 +124,7 @@ pub fn cluster_id() -> &'static str {
 pub fn source_hash() -> &'static str {
 	match &*NAMESPACE {
 		Some(x) => x.as_str(),
-		None => panic!("RIVET_SOURCE_HASH"),
+		None => panic!("{}", EnvVarError::Missing("RIVET_SOURCE_HASH".to_string())),
 	}
 }
 
@@ -137,7 +158,7 @@ pub fn support_deprecated_subdomains() -> bool {
 pub fn origin_api() -> &'static str {
 	match &*ORIGIN_API {
 		Some(x) => x.as_str(),
-		None => panic!("RIVET_ORIGIN_API"),
+		None => panic!("{}", EnvVarError::Missing("RIVET_ORIGIN_API".to_string())),
 	}
 }
 
@@ -145,7 +166,7 @@ pub fn origin_api() -> &'static str {
 pub fn origin_hub() -> &'static str {
 	match &*ORIGIN_HUB {
 		Some(x) => x.as_str(),
-		None => panic!("RIVET_ORIGIN_HUB"),
+		None => panic!("{}", EnvVarError::Missing("RIVET_ORIGIN_HUB".to_string())),
 	}
 }
 
@@ -156,7 +177,7 @@ pub fn dns_provider() -> Option<&'static str> {
 pub fn chirp_service_name() -> &'static str {
 	match &*CHIRP_SERVICE_NAME {
 		Some(x) => x.as_str(),
-		None => panic!("CHIRP_SERVICE_NAME"),
+		None => panic!("{}", EnvVarError::Missing("CHIRP_SERVICE_NAME".to_string())),
 	}
 }
 
@@ -165,7 +186,7 @@ pub fn is_billing_enabled() -> bool {
 }
 
 /// The current stripe API token.
-pub async fn stripe_token() -> Result<String, std::env::VarError> {
+pub async fn stripe_token() -> Result<String, EnvVarError> {
 	read_secret(&["stripe", "token"]).await
 }
 
@@ -177,11 +198,13 @@ pub async fn stripe_token() -> Result<String, std::env::VarError> {
 /// - invoice.payment_succeeded
 /// - checkout.session.completed
 /// - payment_intent.succeeded
-pub async fn stripe_webhook_secret() -> Result<String, std::env::VarError> {
+pub async fn stripe_webhook_secret() -> Result<String, EnvVarError> {
 	read_secret(&["stripe", "webhook_secret"]).await
 }
 
 pub mod cloudflare {
+	use super::EnvVarError;
+
 	lazy_static::lazy_static! {
 		static ref CLOUDFLARE_AUTH_TOKEN: Option<String> = std::env::var("CLOUDFLARE_AUTH_TOKEN").ok();
 	}
@@ -189,7 +212,7 @@ pub mod cloudflare {
 	pub fn auth_token() -> &'static str {
 		match &*CLOUDFLARE_AUTH_TOKEN {
 			Some(x) => x.as_str(),
-			None => panic!("CLOUDFLARE_AUTH_TOKEN"),
+			None => panic!("{}", EnvVarError::Missing("CLOUDFLARE_AUTH_TOKEN".to_string())),
 		}
 	}
 

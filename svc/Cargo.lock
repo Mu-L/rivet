@@ -2335,7 +2335,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cluster-default-create"
+name = "cluster-default-update"
 version = "0.0.1"
 dependencies = [
  "chirp-client",
@@ -7051,6 +7051,7 @@ name = "rivet-util-env"
 version = "0.1.0"
 dependencies = [
  "lazy_static",
+ "thiserror",
  "uuid",
 ]
 
