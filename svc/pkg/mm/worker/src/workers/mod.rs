@@ -1,4 +1,5 @@
 chirp_worker::workers![
+	datacenter_closed_set,
 	lobby_cleanup,
 	lobby_closed_set,
 	lobby_create,
