@@ -419,7 +419,7 @@ types:
     docs: A group's billing payment.
     properties:
       amount:
-        docs: Payment amount (in hundreths USD, 100 = $1.00).
+        docs: Payment amount (in hundredths USD, 100 = $1.00).
         type: double
       description:
         docs: A description of this payment.
@@ -443,7 +443,7 @@ types:
     docs: A group's billing transfer.
     properties:
       amount:
-        docs: Payment amount (in hundreths USD, 100 = $1.00).
+        docs: Payment amount (in hundredths USD, 100 = $1.00).
         type: long
       description:
         docs: A description of this transfer.

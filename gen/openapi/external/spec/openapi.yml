@@ -438,7 +438,7 @@ paths:
       security: *ref_0
   /cloud/games/{game_id}/namespaces/{namespace_id}/cdn-auth:
     put:
-      description: Updates the CDN authentication type of the given game namesapce.
+      description: Updates the CDN authentication type of the given game namespace.
       operationId: cloud_games_namespaces_setNamespaceCdnAuthType
       tags:
         - CloudGamesNamespaces
@@ -506,7 +506,7 @@ paths:
     put:
       description: >-
         Toggles whether or not to allow authentication based on domain for the
-        given game namesapce.
+        given game namespace.
       operationId: cloud_games_namespaces_toggleNamespaceDomainPublicAuth
       tags:
         - CloudGamesNamespaces
@@ -7944,6 +7944,44 @@ components:
           $ref: '#/components/schemas/CloudVersionEngineGodotConfig'
         html5:
           $ref: '#/components/schemas/CloudVersionEngineHtml5Config'
+    CloudVersionIdentityConfig:
+      type: object
+      description: Identity configuration for a given version.
+      properties:
+        display_names:
+          type: array
+          items:
+            type: string
+        avatars:
+          type: array
+          items:
+            type: string
+            format: uuid
+        custom_display_names:
+          type: array
+          items:
+            $ref: '#/components/schemas/CloudVersionIdentityCustomDisplayName'
+          description: '**Deprecated**'
+        custom_avatars:
+          type: array
+          items:
+            $ref: '#/components/schemas/CloudVersionIdentityCustomAvatar'
+          description: '**Deprecated**'
+    CloudVersionIdentityCustomDisplayName:
+      type: object
+      properties:
+        display_name:
+          type: string
+      required:
+        - display_name
+    CloudVersionIdentityCustomAvatar:
+      type: object
+      properties:
+        upload_id:
+          type: string
+          format: uuid
+      required:
+        - upload_id
     CloudVersionKvConfig:
       type: object
       description: KV configuration for a given version.
@@ -8190,7 +8228,7 @@ components:
           type: string
           format: date-time
           description: >
-            If this token is comprimised, anyone with access to this token has
+            If this token is compromised, anyone with access to this token has
             control of the identity.
         identity:
           $ref: '#/components/schemas/IdentityProfile'
@@ -9688,44 +9726,6 @@ components:
             _Configures Rivet CLI behavior. Has no effect on server behavior._
       required:
         - game_module
-    CloudVersionIdentityConfig:
-      type: object
-      description: Identity configuration for a given version.
-      properties:
-        display_names:
-          type: array
-          items:
-            type: string
-        avatars:
-          type: array
-          items:
-            type: string
-            format: uuid
-        custom_display_names:
-          type: array
-          items:
-            $ref: '#/components/schemas/CloudVersionIdentityCustomDisplayName'
-          description: '**Deprecated**'
-        custom_avatars:
-          type: array
-          items:
-            $ref: '#/components/schemas/CloudVersionIdentityCustomAvatar'
-          description: '**Deprecated**'
-    CloudVersionIdentityCustomDisplayName:
-      type: object
-      properties:
-        display_name:
-          type: string
-      required:
-        - display_name
-    CloudVersionIdentityCustomAvatar:
-      type: object
-      properties:
-        upload_id:
-          type: string
-          format: uuid
-      required:
-        - upload_id
     CloudVersionMatchmakerPortRange:
       type: object
       description: Range of ports that can be connected to.
@@ -10761,8 +10761,8 @@ components:
         is_following_me:
           type: boolean
           description: >-
-            Whether or not this identity is both followng and is followed by the
-            requestee's identity.
+            Whether or not this identity is both following and is followed by
+            the requestee's identity.
         is_mutual_following:
           type: boolean
       required:
@@ -10820,8 +10820,8 @@ components:
         is_following_me:
           type: boolean
           description: >-
-            Whether or not this identity is both followng and is followed by the
-            requestee's identity.
+            Whether or not this identity is both following and is followed by
+            the requestee's identity.
         is_mutual_following:
           type: boolean
         join_ts:
@@ -11371,5 +11371,3 @@ components:
 servers:
   - url: https://api.rivet.gg
     description: Production
-  - url: https://api.staging.gameinc.io
-    description: Staging
