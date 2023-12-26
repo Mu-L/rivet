@@ -185,14 +185,41 @@ components:
       - enterprise
       - oss
       type: string
+    CloudBootstrapDomains:
+      description: Domains that host parts of Rivet
+      properties:
+        cdn:
+          type: string
+        job:
+          type: string
+        main:
+          type: string
+      required:
+      - main
+      - cdn
+      - job
+      type: object
+    CloudBootstrapOrigins:
+      description: Origins used to build URLs from
+      properties:
+        hub:
+          type: string
+      required:
+      - hub
+      type: object
     CloudBootstrapResponse:
       properties:
         captcha:
           $ref: '#/components/schemas/CloudBootstrapCaptcha'
         cluster:
           $ref: '#/components/schemas/CloudBootstrapCluster'
+        domains:
+          $ref: '#/components/schemas/CloudBootstrapDomains'
+        origins:
+          $ref: '#/components/schemas/CloudBootstrapOrigins'
       required:
       - cluster
+      - origins
       - captcha
       type: object
     CloudBuildSummary:
@@ -1115,6 +1142,13 @@ components:
       - upload_id
       - presigned_request
       type: object
+    CloudGamesReserveVersionNameResponse:
+      properties:
+        version_display_name:
+          type: string
+      required:
+      - version_display_name
+      type: object
     CloudGamesValidateGameRequest:
       properties:
         display_name:
@@ -1913,6 +1947,8 @@ components:
       type: object
     CloudVersionEngineConfig:
       properties:
+        custom:
+          $ref: '#/components/schemas/CloudVersionEngineCustomConfig'
         godot:
           $ref: '#/components/schemas/CloudVersionEngineGodotConfig'
         html5:
@@ -1921,6 +1957,9 @@ components:
           $ref: '#/components/schemas/CloudVersionEngineUnityConfig'
         unreal:
           $ref: '#/components/schemas/CloudVersionEngineUnrealConfig'
+      type: object
+    CloudVersionEngineCustomConfig:
+      properties: {}
       type: object
     CloudVersionEngineGodotConfig:
       properties: {}
@@ -7335,6 +7374,65 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CloudGamesCreateGameVersionResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          description: ''
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          description: ''
+        '429':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          description: ''
+        '500':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          description: ''
+      security: *id001
+      tags:
+      - CloudGamesVersions
+  /cloud/games/{game_id}/versions/reserve-name:
+    post:
+      description: Reserves a display name for the next version. Used to generate
+        a monotomically increasing build number without causing a race condition with
+        multiple versions getting created at the same time.
+      operationId: cloud_games_versions_reserveVersionName
+      parameters:
+      - in: path
+        name: game_id
+        required: true
+        schema:
+          format: uuid
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudGamesReserveVersionNameResponse'
           description: ''
         '400':
           content:

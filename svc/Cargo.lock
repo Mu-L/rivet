@@ -2331,6 +2331,7 @@ version = "0.0.1"
 dependencies = [
  "chirp-client",
  "chirp-worker",
+ "chrono",
  "cloud-game-token-create",
  "rivet-health-checks",
  "rivet-metrics",

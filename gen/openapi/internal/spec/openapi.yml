@@ -6252,6 +6252,66 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CloudGamesCreateGameVersionRequest'
+  /cloud/games/{game_id}/versions/reserve-name:
+    post:
+      description: >-
+        Reserves a display name for the next version. Used to generate a
+        monotomically increasing build number without causing a race condition
+        with multiple versions getting created at the same time.
+      operationId: cloud_games_versions_reserveVersionName
+      tags:
+        - CloudGamesVersions
+      parameters:
+        - name: game_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudGamesReserveVersionNameResponse'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '408':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '500':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+      security: *ref_0
   /cloud/games/{game_id}/versions/validate:
     post:
       description: Validates information used to create a new game version.
@@ -8420,10 +8480,15 @@ components:
       properties:
         cluster:
           $ref: '#/components/schemas/CloudBootstrapCluster'
+        domains:
+          $ref: '#/components/schemas/CloudBootstrapDomains'
+        origins:
+          $ref: '#/components/schemas/CloudBootstrapOrigins'
         captcha:
           $ref: '#/components/schemas/CloudBootstrapCaptcha'
       required:
         - cluster
+        - origins
         - captcha
     CloudBootstrapCluster:
       type: string
@@ -8431,6 +8496,28 @@ components:
         - enterprise
         - oss
       description: The type of cluster that the backend is currently running.
+    CloudBootstrapDomains:
+      type: object
+      description: Domains that host parts of Rivet
+      properties:
+        main:
+          type: string
+        cdn:
+          type: string
+        job:
+          type: string
+      required:
+        - main
+        - cdn
+        - job
+    CloudBootstrapOrigins:
+      type: object
+      description: Origins used to build URLs from
+      properties:
+        hub:
+          type: string
+      required:
+        - hub
     CloudBootstrapCaptcha:
       type: object
       properties:
@@ -8802,6 +8889,8 @@ components:
           $ref: '#/components/schemas/CloudVersionEngineGodotConfig'
         html5:
           $ref: '#/components/schemas/CloudVersionEngineHtml5Config'
+        custom:
+          $ref: '#/components/schemas/CloudVersionEngineCustomConfig'
     CloudVersionIdentityConfig:
       type: object
       description: Identity configuration for a given version.
@@ -10812,6 +10901,13 @@ components:
           format: uuid
       required:
         - version_id
+    CloudGamesReserveVersionNameResponse:
+      type: object
+      properties:
+        version_display_name:
+          type: string
+      required:
+        - version_display_name
     CloudGamesValidateGameVersionRequest:
       type: object
       properties:
@@ -10878,6 +10974,9 @@ components:
           description: A list of region server tiers.
       required:
         - tiers
+    CloudVersionEngineCustomConfig:
+      type: object
+      properties: {}
     CloudVersionEngineGodotConfig:
       type: object
       properties: {}

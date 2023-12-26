@@ -118,7 +118,7 @@ async fn update_db(
 	tracing::info!("deleting run");
 	if run_row.cleanup_ts.is_none() {
 		sql_execute!(
-			[ctx]
+			[ctx, @tx tx]
 			"UPDATE db_job_state.runs SET cleanup_ts = $2 WHERE run_id = $1",
 			run_id,
 			now,

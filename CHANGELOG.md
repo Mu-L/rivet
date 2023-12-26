@@ -5,12 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [23.2.0-rc2] - Unreleased
+## [23.2.0-rc.2] - Unreleased
 
 ### Changed
 
 -   **Matchmaker** Allow excluding `matchmaker.regions` in order to enable all regions
 -   **Matchmaker** Lowered internal overhead of log shipping for lobbies
+-   **API** Return `API_REQUEST_TIMEOUT` error after 50s (see `docs/infrastructure/API_TIMEOUTS.md` for context)
+-   Lower long poll timeout from 60s -> 40s
 
 ### Security
 
@@ -20,8 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 -   **Infra** runc rootfs is now a writable file system
 -   **Matchmaker** Fix logs not shipping if lobby exits immediately
+-   **API** 520 error when long polling
 
-## [23.2.0-rc1] - 2023-12-01
+## [23.2.0-rc.1] - 2023-12-01
 
 ### Added
 
