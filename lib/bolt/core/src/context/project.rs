@@ -168,7 +168,6 @@ impl ProjectContextData {
 		}
 
 		// MARK: Dynamic Servers
-		// Validate the build delivery method
 		if let Some(dynamic_servers) = &self.ns().rivet.dynamic_servers {
 			let mut unique_datacenter_ids = HashSet::new();
 
@@ -187,6 +186,7 @@ impl ProjectContextData {
 					panic!("invalid datacenter ({}): Missing ATS pool", name_id);
 				};
 
+				// Validate the build delivery method
 				let ats_count = ats_pool.desired_count;
 				match datacenter.build_delivery_method {
 					config::ns::DynamicServersBuildDeliveryMethod::TrafficServer => {

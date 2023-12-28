@@ -99,6 +99,7 @@ lazy_static::lazy_static! {
 		.unwrap_or_default();
 }
 
+// Cluster id for provisioning servers
 pub fn default_cluster_id() -> Uuid {
 	Uuid::nil()
 }
