@@ -7202,6 +7202,7 @@ name = "rivet-util-cluster"
 version = "0.1.0"
 dependencies = [
  "rivet-util",
+ "tokio",
  "types",
  "uuid",
 ]
