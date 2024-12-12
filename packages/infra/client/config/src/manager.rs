@@ -4,9 +4,9 @@ use std::{
 };
 
 use pegboard::protocol;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use url::Url;
-use schemars::JsonSchema;
 use uuid::Uuid;
 
 #[derive(Clone, Deserialize)]
@@ -25,8 +25,8 @@ impl Config {
 		pegboard::client_config::ClientConfig {
 			network: pegboard::client_config::Network {
 				bind_ip: IpAddr::V4(self.client.network.bind_ip),
-				lan_ip: self.client.network.lan_ip,
-				wan_ip: self.client.network.wan_ip,
+				lan_hostname: self.client.network.lan_hostname.clone(),
+				wan_hostname: self.client.network.wan_hostname.clone(),
 				lan_port_range_min: self.client.network.lan_port_range_min(),
 				lan_port_range_max: self.client.network.lan_port_range_max(),
 				wan_port_range_min: self.client.network.wan_port_range_min(),
@@ -46,6 +46,7 @@ pub struct Client {
 	pub data_dir: Option<PathBuf>,
 	pub cluster: Cluster,
 	pub runner: Runner,
+	pub images: Images,
 	pub network: Network,
 	#[serde(default)]
 	pub cni: Cni,
@@ -97,7 +98,7 @@ impl Runner {
 	}
 
 	pub fn port(&self) -> u16 {
-		self.port.unwrap_or(7080)
+		self.port.unwrap_or(6080)
 	}
 
 	pub fn container_runner_binary_path(&self) -> PathBuf {
@@ -115,6 +116,12 @@ impl Runner {
 
 #[derive(Clone, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct Images {
+	pub pull_addresses: Addresses,
+}
+
+#[derive(Clone, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Network {
 	/// Address to serve actor traffic on.
 	///
@@ -125,12 +132,12 @@ pub struct Network {
 	/// Address to access this node in a LAN.
 	///
 	/// This IP is used to route traffic from Game Guard.
-	pub lan_ip: IpAddr,
+	pub lan_hostname: String,
 
 	/// Address to access this node publicly.
 	///
 	/// This IP is used when providing the actor's IP & port for host networking.
-	pub wan_ip: IpAddr,
+	pub wan_hostname: String,
 
 	pub lan_port_range_min: Option<u16>,
 	pub lan_port_range_max: Option<u16>,
@@ -224,7 +231,7 @@ pub struct Metrics {
 
 impl Metrics {
 	pub fn port(&self) -> u16 {
-		self.port.unwrap_or(7090)
+		self.port.unwrap_or(6090)
 	}
 }
 
@@ -233,12 +240,12 @@ impl Metrics {
 pub struct FoundationDb {
 	pub cluster_description: String,
 	pub cluster_id: String,
-	pub address: FoundationDbAddress,
+	pub addresses: Addresses,
 }
 
 #[derive(Clone, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum FoundationDbAddress {
+pub enum Addresses {
 	Dynamic { fetch_endpoint: Url },
 	Static(Vec<String>),
 }

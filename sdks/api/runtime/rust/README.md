@@ -38,6 +38,7 @@ Class | Method | HTTP request | Description
 *ActorBuildsApi* | [**actor_builds_prepare**](docs/ActorBuildsApi.md#actor_builds_prepare) | **POST** /builds/prepare | 
 *ActorLogsApi* | [**actor_logs_get**](docs/ActorLogsApi.md#actor_logs_get) | **GET** /actors/{actor}/logs | 
 *ActorRegionsApi* | [**actor_regions_list**](docs/ActorRegionsApi.md#actor_regions_list) | **GET** /regions | 
+*ActorRegionsApi* | [**actor_regions_resolve**](docs/ActorRegionsApi.md#actor_regions_resolve) | **GET** /regions/resolve | 
 
 
 ## Documentation For Models
@@ -51,10 +52,10 @@ Class | Method | HTTP request | Description
  - [ActorCreateActorRequest](docs/ActorCreateActorRequest.md)
  - [ActorCreateActorResponse](docs/ActorCreateActorResponse.md)
  - [ActorCreateActorRuntimeRequest](docs/ActorCreateActorRuntimeRequest.md)
+ - [ActorEndpointType](docs/ActorEndpointType.md)
  - [ActorGetActorLogsResponse](docs/ActorGetActorLogsResponse.md)
  - [ActorGetActorResponse](docs/ActorGetActorResponse.md)
  - [ActorGetBuildResponse](docs/ActorGetBuildResponse.md)
- - [ActorGuardRouting](docs/ActorGuardRouting.md)
  - [ActorLifecycle](docs/ActorLifecycle.md)
  - [ActorListActorsResponse](docs/ActorListActorsResponse.md)
  - [ActorListBuildsResponse](docs/ActorListBuildsResponse.md)
@@ -64,13 +65,12 @@ Class | Method | HTTP request | Description
  - [ActorNetworkMode](docs/ActorNetworkMode.md)
  - [ActorPatchBuildTagsRequest](docs/ActorPatchBuildTagsRequest.md)
  - [ActorPort](docs/ActorPort.md)
- - [ActorPortAuthorization](docs/ActorPortAuthorization.md)
  - [ActorPortProtocol](docs/ActorPortProtocol.md)
- - [ActorPortQueryAuthorization](docs/ActorPortQueryAuthorization.md)
  - [ActorPortRouting](docs/ActorPortRouting.md)
  - [ActorPrepareBuildRequest](docs/ActorPrepareBuildRequest.md)
  - [ActorPrepareBuildResponse](docs/ActorPrepareBuildResponse.md)
  - [ActorRegion](docs/ActorRegion.md)
+ - [ActorResolveRegionResponse](docs/ActorResolveRegionResponse.md)
  - [ActorResources](docs/ActorResources.md)
  - [ActorRuntime](docs/ActorRuntime.md)
  - [ActorUpgradeActorRequest](docs/ActorUpgradeActorRequest.md)

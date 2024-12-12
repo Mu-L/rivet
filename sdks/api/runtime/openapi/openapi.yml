@@ -27,6 +27,11 @@ paths:
           required: false
           schema:
             type: string
+        - name: endpoint_type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ActorEndpointType'
       responses:
         '200':
           description: ''
@@ -168,6 +173,11 @@ paths:
           required: false
           schema:
             type: string
+        - name: endpoint_type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ActorEndpointType'
         - name: tags_json
           in: query
           required: false
@@ -244,6 +254,11 @@ paths:
           required: false
           schema:
             type: string
+        - name: endpoint_type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ActorEndpointType'
       responses:
         '200':
           description: ''
@@ -909,7 +924,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
-      security: *ref_0
+  /regions/resolve:
+    get:
+      operationId: actor_regions_resolve
+      tags:
+        - ActorRegions
+      parameters:
+        - name: lat
+          in: query
+          required: false
+          schema:
+            type: number
+            format: double
+        - name: long
+          in: query
+          required: false
+          schema:
+            type: number
+            format: double
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActorResolveRegionResponse'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '408':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '500':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
 components:
   schemas:
     ActorGetActorResponse:
@@ -1049,8 +1124,6 @@ components:
     ActorPrepareBuildRequest:
       type: object
       properties:
-        name:
-          type: string
         image_tag:
           type: string
           description: A tag given to the project build.
@@ -1061,7 +1134,6 @@ components:
         compression:
           $ref: '#/components/schemas/ActorBuildCompression'
       required:
-        - name
         - image_file
     ActorPrepareBuildResponse:
       type: object
@@ -1193,10 +1265,12 @@ components:
           $ref: '#/components/schemas/ActorPortProtocol'
         internal_port:
           type: integer
-        public_hostname:
+        hostname:
           type: string
-        public_port:
+        port:
           type: integer
+        path:
+          type: string
         routing:
           $ref: '#/components/schemas/ActorPortRouting'
       required:
@@ -1219,29 +1293,15 @@ components:
           $ref: '#/components/schemas/ActorHostRouting'
     ActorGuardRouting:
       type: object
-      properties:
-        authorization:
-          $ref: '#/components/schemas/ActorPortAuthorization'
-    ActorPortAuthorization:
-      type: object
-      properties:
-        bearer:
-          type: string
-        query:
-          $ref: '#/components/schemas/ActorPortQueryAuthorization'
-    ActorPortQueryAuthorization:
-      type: object
-      properties:
-        key:
-          type: string
-        value:
-          type: string
-      required:
-        - key
-        - value
+      properties: {}
     ActorHostRouting:
       type: object
       properties: {}
+    ActorEndpointType:
+      type: string
+      enum:
+        - hostname
+        - path
     ActorBuild:
       type: object
       properties:
@@ -1310,6 +1370,13 @@ components:
             $ref: '#/components/schemas/ActorRegion'
       required:
         - regions
+    ActorResolveRegionResponse:
+      type: object
+      properties:
+        region:
+          $ref: '#/components/schemas/ActorRegion'
+      required:
+        - region
     WatchResponse:
       type: object
       description: Provided by watchable endpoints used in blocking loops.

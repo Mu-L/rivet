@@ -27,6 +27,11 @@ paths:
           required: false
           schema:
             type: string
+        - name: endpoint_type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ActorEndpointType'
       responses:
         '200':
           description: ''
@@ -168,6 +173,11 @@ paths:
           required: false
           schema:
             type: string
+        - name: endpoint_type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ActorEndpointType'
         - name: tags_json
           in: query
           required: false
@@ -244,6 +254,11 @@ paths:
           required: false
           schema:
             type: string
+        - name: endpoint_type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ActorEndpointType'
       responses:
         '200':
           description: ''
@@ -4871,7 +4886,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
-      security: *ref_0
+  /regions/resolve:
+    get:
+      operationId: actor_regions_resolve
+      tags:
+        - ActorRegions
+      parameters:
+        - name: lat
+          in: query
+          required: false
+          schema:
+            type: number
+            format: double
+        - name: long
+          in: query
+          required: false
+          schema:
+            type: number
+            format: double
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActorResolveRegionResponse'
+        '400':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '408':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '429':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '500':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /auth/identity/email/start-verification:
     post:
       description: Starts the verification process for linking an email to your identity.
@@ -8879,12 +8954,12 @@ components:
         games:
           type: array
           items:
-            $ref: '#/components/schemas/GameSummary'
+            $ref: '#/components/schemas/GameGameSummary'
           description: A list of game summaries.
         groups:
           type: array
           items:
-            $ref: '#/components/schemas/GroupSummary'
+            $ref: '#/components/schemas/GroupGroupSummary'
           description: A list of group summaries.
         watch:
           $ref: '#/components/schemas/WatchResponse'
@@ -9234,15 +9309,15 @@ components:
           additionalProperties:
             type: string
         engine:
-          $ref: '#/components/schemas/CloudVersionEngineConfig'
+          $ref: '#/components/schemas/CloudVersionEngineEngineConfig'
         cdn:
-          $ref: '#/components/schemas/CloudVersionCdnConfig'
+          $ref: '#/components/schemas/CloudVersionCdnCdnConfig'
         matchmaker:
-          $ref: '#/components/schemas/CloudVersionMatchmakerConfig'
+          $ref: '#/components/schemas/CloudVersionMatchmakerMatchmakerConfig'
         kv:
-          $ref: '#/components/schemas/CloudVersionKvConfig'
+          $ref: '#/components/schemas/CloudVersionKvKvConfig'
         identity:
-          $ref: '#/components/schemas/CloudVersionIdentityConfig'
+          $ref: '#/components/schemas/CloudVersionIdentityIdentityConfig'
     CloudVersionFull:
       type: object
       description: A full version.
@@ -9276,7 +9351,7 @@ components:
         - version_id
         - create_ts
         - display_name
-    CloudVersionCdnConfig:
+    CloudVersionCdnCdnConfig:
       type: object
       description: CDN configuration for a given version.
       properties:
@@ -9347,7 +9422,7 @@ components:
       required:
         - name
         - value
-    CloudVersionEngineConfig:
+    CloudVersionEngineEngineConfig:
       type: object
       properties:
         unity:
@@ -9360,7 +9435,7 @@ components:
           $ref: '#/components/schemas/CloudVersionEngineHtml5Config'
         custom:
           $ref: '#/components/schemas/CloudVersionEngineCustomConfig'
-    CloudVersionIdentityConfig:
+    CloudVersionIdentityIdentityConfig:
       type: object
       description: |-
         **Deprecated**
@@ -9402,11 +9477,11 @@ components:
           format: uuid
       required:
         - upload_id
-    CloudVersionKvConfig:
+    CloudVersionKvKvConfig:
       type: object
       description: KV configuration for a given version.
       properties: {}
-    CloudVersionMatchmakerConfig:
+    CloudVersionMatchmakerMatchmakerConfig:
       type: object
       description: Matchmaker configuration for a given version.
       properties:
@@ -9449,7 +9524,7 @@ components:
         groups:
           type: array
           items:
-            $ref: '#/components/schemas/GroupSummary'
+            $ref: '#/components/schemas/GroupGroupSummary'
           description: A list of group summaries.
         watch:
           $ref: '#/components/schemas/WatchResponse'
@@ -9589,7 +9664,7 @@ components:
       type: object
       properties:
         group:
-          $ref: '#/components/schemas/GroupSummary'
+          $ref: '#/components/schemas/GroupGroupSummary'
       required:
         - group
     GroupTransferOwnershipRequest:
@@ -9728,15 +9803,23 @@ components:
         cluster_id:
           type: string
           format: uuid
+        lan_ip:
+          type: string
+        wan_ip:
+          type: string
         vlan_ip:
           type: string
+          description: '**Deprecated**: Use lan_ip'
         public_ip:
           type: string
+          description: '**Deprecated**: Use wan_ip'
       required:
         - name
         - server_id
         - datacenter_id
         - cluster_id
+        - lan_ip
+        - wan_ip
         - vlan_ip
         - public_ip
     ServersGetServerResponse:
@@ -9860,8 +9943,6 @@ components:
     ActorPrepareBuildRequest:
       type: object
       properties:
-        name:
-          type: string
         image_tag:
           type: string
           description: A tag given to the project build.
@@ -9872,7 +9953,6 @@ components:
         compression:
           $ref: '#/components/schemas/ActorBuildCompression'
       required:
-        - name
         - image_file
     ActorPrepareBuildResponse:
       type: object
@@ -10004,10 +10084,12 @@ components:
           $ref: '#/components/schemas/ActorPortProtocol'
         internal_port:
           type: integer
-        public_hostname:
+        hostname:
           type: string
-        public_port:
+        port:
           type: integer
+        path:
+          type: string
         routing:
           $ref: '#/components/schemas/ActorPortRouting'
       required:
@@ -10030,29 +10112,15 @@ components:
           $ref: '#/components/schemas/ActorHostRouting'
     ActorGuardRouting:
       type: object
-      properties:
-        authorization:
-          $ref: '#/components/schemas/ActorPortAuthorization'
-    ActorPortAuthorization:
-      type: object
-      properties:
-        bearer:
-          type: string
-        query:
-          $ref: '#/components/schemas/ActorPortQueryAuthorization'
-    ActorPortQueryAuthorization:
-      type: object
-      properties:
-        key:
-          type: string
-        value:
-          type: string
-      required:
-        - key
-        - value
+      properties: {}
     ActorHostRouting:
       type: object
       properties: {}
+    ActorEndpointType:
+      type: string
+      enum:
+        - hostname
+        - path
     ActorBuild:
       type: object
       properties:
@@ -10121,6 +10189,13 @@ components:
             $ref: '#/components/schemas/ActorRegion'
       required:
         - regions
+    ActorResolveRegionResponse:
+      type: object
+      properties:
+        region:
+          $ref: '#/components/schemas/ActorRegion'
+      required:
+        - region
     AuthCompleteStatus:
       type: string
       enum:
@@ -12070,7 +12145,7 @@ components:
         - game_id
         - name_id
         - display_name
-    GameSummary:
+    GameGameSummary:
       type: object
       properties:
         game_id:
@@ -12126,7 +12201,7 @@ components:
           type: string
           description: The URL to this game's website.
         developer:
-          $ref: '#/components/schemas/GroupSummary'
+          $ref: '#/components/schemas/GroupGroupSummary'
         tags:
           type: array
           items:
@@ -12143,7 +12218,7 @@ components:
         recommended_groups:
           type: array
           items:
-            $ref: '#/components/schemas/GroupSummary'
+            $ref: '#/components/schemas/GroupGroupSummary'
           description: A list of group summaries.
         identity_leaderboard_categories:
           type: array
@@ -12320,7 +12395,7 @@ components:
       required:
         - kilometers
         - miles
-    GroupSummary:
+    GroupGroupSummary:
       type: object
       properties:
         group_id:
@@ -12530,11 +12605,11 @@ components:
         games:
           type: array
           items:
-            $ref: '#/components/schemas/GameSummary'
+            $ref: '#/components/schemas/GameGameSummary'
         suggested_groups:
           type: array
           items:
-            $ref: '#/components/schemas/GroupSummary'
+            $ref: '#/components/schemas/GroupGroupSummary'
         suggested_players:
           type: array
           items:
@@ -13158,7 +13233,7 @@ components:
         games:
           type: array
           items:
-            $ref: '#/components/schemas/GameSummary'
+            $ref: '#/components/schemas/GameGameSummary'
           description: A list of game summaries.
         watch:
           $ref: '#/components/schemas/WatchResponse'
@@ -13195,9 +13270,9 @@ components:
           format: uuid
         pool_type:
           $ref: '#/components/schemas/ProvisionPoolType'
-        vlan_ip:
+        lan_ip:
           type: string
-        public_ip:
+        wan_ip:
           type: string
       required:
         - server_id

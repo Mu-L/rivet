@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use api_helper::{anchor::WatchIndexQuery, ctx::Ctx};
 use futures_util::{StreamExt, TryStreamExt};
 use proto::backend;
@@ -6,7 +8,6 @@ use rivet_convert::{ApiInto, ApiTryInto};
 use rivet_operation::prelude::*;
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
 
 use crate::{
 	assert,
@@ -16,12 +17,19 @@ use crate::{
 
 use super::GlobalQuery;
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct GlobalEndpointTypeQuery {
+	#[serde(flatten)]
+	global: GlobalQuery,
+	endpoint_type: Option<models::ActorEndpointType>,
+}
+
 // MARK: GET /actors/{}
 pub async fn get(
 	ctx: Ctx<Auth>,
 	actor_id: Uuid,
 	watch_index: WatchIndexQuery,
-	query: GlobalQuery,
+	query: GlobalEndpointTypeQuery,
 ) -> GlobalResult<models::ActorGetActorResponse> {
 	get_inner(&ctx, actor_id, watch_index, query).await
 }
@@ -30,14 +38,15 @@ async fn get_inner(
 	ctx: &Ctx<Auth>,
 	actor_id: Uuid,
 	_watch_index: WatchIndexQuery,
-	query: GlobalQuery,
+	query: GlobalEndpointTypeQuery,
 ) -> GlobalResult<models::ActorGetActorResponse> {
-	let CheckOutput { env_id, .. } = ctx.auth().check(ctx.op_ctx(), &query, true).await?;
+	let CheckOutput { env_id, .. } = ctx.auth().check(ctx.op_ctx(), &query.global, true).await?;
 
 	// Get the server
 	let servers_res = ctx
 		.op(ds::ops::server::get::Input {
 			server_ids: vec![actor_id],
+			endpoint_type: query.endpoint_type.map(ApiInto::api_into),
 		})
 		.await?;
 	let server = unwrap_with!(servers_res.servers.first(), ACTOR_NOT_FOUND);
@@ -66,7 +75,16 @@ pub async fn get_deprecated(
 	watch_index: WatchIndexQuery,
 ) -> GlobalResult<models::ServersGetServerResponse> {
 	let global = build_global_query_compat(&ctx, game_id, env_id).await?;
-	let get_res = get_inner(&ctx, actor_id, watch_index, global).await?;
+	let get_res = get_inner(
+		&ctx,
+		actor_id,
+		watch_index,
+		GlobalEndpointTypeQuery {
+			global,
+			endpoint_type: None,
+		},
+	)
+	.await?;
 
 	let game_res = ctx
 		.op(cluster::ops::get_for_game::Input {
@@ -99,9 +117,10 @@ pub async fn get_deprecated(
 pub async fn create(
 	ctx: Ctx<Auth>,
 	body: models::ActorCreateActorRequest,
-	query: GlobalQuery,
+	query: GlobalEndpointTypeQuery,
 ) -> GlobalResult<models::ActorCreateActorResponse> {
-	let CheckOutput { game_id, env_id } = ctx.auth().check(ctx.op_ctx(), &query, true).await?;
+	let CheckOutput { game_id, env_id } =
+		ctx.auth().check(ctx.op_ctx(), &query.global, true).await?;
 
 	let (clusters_res, game_configs_res, build) = tokio::try_join!(
 		ctx.op(cluster::ops::get_for_game::Input {
@@ -191,24 +210,26 @@ pub async fn create(
 					routing: if let Some(routing) = p.routing {
 						match *routing {
 							models::ActorPortRouting {
-								guard: Some(gg),
+								guard: Some(_gg),
 								host: None,
 							} => ds::types::Routing::GameGuard {
 								protocol: p.protocol.api_into(),
-								authorization: match gg.authorization.as_deref() {
-									Some(models::ActorPortAuthorization {
-										bearer: Some(token),
-										..
-									}) => ds::types::PortAuthorization::Bearer(token.clone()),
-									Some(models::ActorPortAuthorization {
-										query: Some(query),
-										..
-									}) => ds::types::PortAuthorization::Query(
-										query.key.clone(),
-										query.value.clone(),
-									),
-									_ => ds::types::PortAuthorization::None,
-								},
+								// Temporarily disabled
+								// authorization: match gg.authorization.as_deref() {
+								// 	Some(models::ActorPortAuthorization {
+								// 		bearer: Some(token),
+								// 		..
+								// 	}) => ds::types::PortAuthorization::Bearer(token.clone()),
+								// 	Some(models::ActorPortAuthorization {
+								// 		query: Some(query),
+								// 		..
+								// 	}) => ds::types::PortAuthorization::Query(
+								// 		query.key.clone(),
+								// 		query.value.clone(),
+								// 	),
+								// 	_ => ds::types::PortAuthorization::None,
+								// },
+								authorization: ds::types::PortAuthorization::None,
 							},
 							models::ActorPortRouting {
 								guard: None,
@@ -262,6 +283,7 @@ pub async fn create(
 	let servers_res = ctx
 		.op(ds::ops::server::get::Input {
 			server_ids: vec![server_id],
+			endpoint_type: query.endpoint_type.map(ApiInto::api_into),
 		})
 		.await?;
 	let server = unwrap_with!(servers_res.servers.first(), ACTOR_NOT_FOUND);
@@ -336,9 +358,11 @@ pub async fn create_deprecated(
 									},
 									routing: p.routing.map(|r| {
 										Box::new(models::ActorPortRouting {
-											guard: r.game_guard.map(|_| {
-												Box::new(models::ActorGuardRouting::default())
-											}),
+											// Temporarily disabled
+											// guard: r.game_guard.map(|_| {
+											// 	Box::new(models::ActorGuardRouting::default())
+											// }),
+											guard: r.game_guard.map(|_| json!({})),
 											host: r.host.map(|_| json!({})),
 										})
 									}),
@@ -359,7 +383,10 @@ pub async fn create_deprecated(
 			build_tags: None,
 			tags: body.tags,
 		},
-		global,
+		GlobalEndpointTypeQuery {
+			global,
+			endpoint_type: None,
+		},
 	)
 	.await?;
 
@@ -402,7 +429,7 @@ pub async fn destroy(
 		.await?;
 
 	// Get server after sub is created
-	let server = assert::server_for_env(&ctx, actor_id, game_id, env_id).await?;
+	let server = assert::server_for_env(&ctx, actor_id, game_id, env_id, None).await?;
 
 	// Already destroyed
 	if server.destroy_ts.is_some() {
@@ -449,7 +476,7 @@ pub async fn upgrade(
 ) -> GlobalResult<serde_json::Value> {
 	let CheckOutput { game_id, env_id } = ctx.auth().check(ctx.op_ctx(), &query, false).await?;
 
-	assert::server_for_env(&ctx, actor_id, game_id, env_id).await?;
+	assert::server_for_env(&ctx, actor_id, game_id, env_id, None).await?;
 
 	let build = resolve_build(&ctx, game_id, env_id, body.build, body.build_tags.flatten()).await?;
 
@@ -480,9 +507,9 @@ pub async fn upgrade_all(
 	let tags = unwrap_with!(body.tags, API_BAD_BODY, error = "missing property `tags`");
 
 	ensure_with!(
-		tags.as_object().map(|x| x.len()).unwrap_or_default() <= 64,
+		tags.as_object().map(|x| x.len()).unwrap_or_default() <= 8,
 		API_BAD_BODY,
-		error = "Too many tags (max 64)."
+		error = "Too many tags (max 8)."
 	);
 
 	let tags = unwrap_with!(
@@ -498,11 +525,11 @@ pub async fn upgrade_all(
 			error = "tags[]: Tag label cannot be empty."
 		);
 		ensure_with!(
-			k.len() <= 256,
+			k.len() <= 16,
 			API_BAD_BODY,
 			error = format!(
 				"tags[{:?}]: Tag label too large (max 256 bytes).",
-				&k[..256]
+				util::safe_slice(k, 0, 16),
 			),
 		);
 		ensure_with!(
@@ -576,7 +603,7 @@ pub async fn upgrade_all(
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListQuery {
 	#[serde(flatten)]
-	global: GlobalQuery,
+	global_endpoint_type: GlobalEndpointTypeQuery,
 	tags_json: Option<String>,
 	include_destroyed: Option<bool>,
 	cursor: Option<Uuid>,
@@ -595,7 +622,10 @@ async fn list_actors_inner(
 	_watch_index: WatchIndexQuery,
 	query: ListQuery,
 ) -> GlobalResult<models::ActorListActorsResponse> {
-	let CheckOutput { env_id, .. } = ctx.auth().check(ctx.op_ctx(), &query.global, true).await?;
+	let CheckOutput { env_id, .. } = ctx
+		.auth()
+		.check(ctx.op_ctx(), &query.global_endpoint_type.global, true)
+		.await?;
 
 	let include_destroyed = query.include_destroyed.unwrap_or(false);
 
@@ -625,6 +655,10 @@ async fn list_actors_inner(
 	let servers_res = ctx
 		.op(ds::ops::server::get::Input {
 			server_ids: list_res.server_ids.clone(),
+			endpoint_type: query
+				.global_endpoint_type
+				.endpoint_type
+				.map(ApiInto::api_into),
 		})
 		.await?;
 
@@ -662,7 +696,18 @@ pub async fn list_servers_deprecated(
 	query: ListQuery,
 ) -> GlobalResult<models::ServersListServersResponse> {
 	let global = build_global_query_compat(&ctx, game_id, env_id).await?;
-	let actors_res = list_actors_inner(&ctx, watch_index, ListQuery { global, ..query }).await?;
+	let actors_res = list_actors_inner(
+		&ctx,
+		watch_index,
+		ListQuery {
+			global_endpoint_type: GlobalEndpointTypeQuery {
+				global,
+				..query.global_endpoint_type
+			},
+			..query
+		},
+	)
+	.await?;
 
 	let clusters_res = ctx
 		.op(cluster::ops::get_for_game::Input {
@@ -758,8 +803,8 @@ fn legacy_convert_actor_to_server(
 								}
 								models::ActorPortProtocol::Udp => models::ServersPortProtocol::Udp,
 							},
-							public_hostname: p.public_hostname,
-							public_port: p.public_port,
+							public_hostname: p.hostname,
+							public_port: p.port,
 							routing: Box::new(models::ServersPortRouting {
 								game_guard: p.routing.guard.map(|_| json!({})),
 								host: p.routing.host.map(|_| json!({})),
@@ -825,9 +870,9 @@ async fn resolve_build(
 			);
 
 			ensure_with!(
-				build_tags.len() < 64,
+				build_tags.len() < 8,
 				API_BAD_BODY,
-				error = "Too many build tags (max 64)."
+				error = "Too many build tags (max 8)."
 			);
 
 			for (k, v) in &build_tags {
@@ -837,11 +882,11 @@ async fn resolve_build(
 					error = "build_tags[]: Build tag label cannot be empty."
 				);
 				ensure_with!(
-					k.len() < 128,
+					k.len() < 16,
 					API_BAD_BODY,
 					error = format!(
-						"build_tags[{:?}]: Build tag label too large (max 128 bytes).",
-						&k[..128]
+						"build_tags[{:?}]: Build tag label too large (max 16 bytes).",
+						util::safe_slice(k, 0, 16),
 					)
 				);
 				ensure_with!(
