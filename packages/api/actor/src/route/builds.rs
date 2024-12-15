@@ -9,7 +9,7 @@ use serde_json::json;
 use util::timestamp;
 
 use crate::{
-	auth::{Auth, CheckOutput},
+	auth::{Auth, CheckOpts, CheckOutput},
 	utils::build_global_query_compat,
 };
 
@@ -22,7 +22,17 @@ pub async fn get(
 	_watch_index: WatchIndexQuery,
 	query: GlobalQuery,
 ) -> GlobalResult<models::ActorGetBuildResponse> {
-	let CheckOutput { env_id, .. } = ctx.auth().check(ctx.op_ctx(), &query, false).await?;
+	let CheckOutput { env_id, .. } = ctx
+		.auth()
+		.check(
+			ctx.op_ctx(),
+			CheckOpts {
+				query: &query,
+				allow_service_token: true,
+				opt_auth: false,
+			},
+		)
+		.await?;
 
 	let builds_res = op!([ctx] build_get {
 		build_ids: vec![build_id.into()],
@@ -87,7 +97,17 @@ pub async fn list(
 	_watch_index: WatchIndexQuery,
 	query: ListQuery,
 ) -> GlobalResult<models::ActorListBuildsResponse> {
-	let CheckOutput { env_id, .. } = ctx.auth().check(ctx.op_ctx(), &query.global, false).await?;
+	let CheckOutput { env_id, .. } = ctx
+		.auth()
+		.check(
+			ctx.op_ctx(),
+			CheckOpts {
+				query: &query.global,
+				allow_service_token: true,
+				opt_auth: false,
+			},
+		)
+		.await?;
 
 	let list_res = op!([ctx] build_list_for_env {
 		env_id: Some(env_id.into()),
@@ -183,14 +203,24 @@ pub async fn patch_tags(
 	body: models::ActorPatchBuildTagsRequest,
 	query: GlobalQuery,
 ) -> GlobalResult<serde_json::Value> {
-	let CheckOutput { env_id, .. } = ctx.auth().check(ctx.op_ctx(), &query, false).await?;
+	let CheckOutput { env_id, .. } = ctx
+		.auth()
+		.check(
+			ctx.op_ctx(),
+			CheckOpts {
+				query: &query,
+				allow_service_token: true,
+				opt_auth: false,
+			},
+		)
+		.await?;
 
 	let tags = unwrap_with!(body.tags, API_BAD_BODY, error = "missing field `tags`");
 
 	ensure_with!(
-		tags.as_object().map(|x| x.len()).unwrap_or_default() <= 64,
+		tags.as_object().map(|x| x.len()).unwrap_or_default() <= 8,
 		ACTOR_BUILD_INVALID_PATCH_CONFIG,
-		error = "Too many tags (max 64)."
+		error = "Too many tags (max 8)."
 	);
 
 	let tags = serde_json::from_value::<HashMap<String, Option<String>>>(tags)
@@ -203,9 +233,12 @@ pub async fn patch_tags(
 			error = "tags[]: Tag label cannot be empty."
 		);
 		ensure_with!(
-			k.len() <= 256,
+			k.len() <= 16,
 			ACTOR_BUILD_INVALID_PATCH_CONFIG,
-			error = format!("tags[{:?}]: Tag label too large (max 256).", &k[..256])
+			error = format!(
+				"tags[{:?}]: Tag label too large (max 16).",
+				util::safe_slice(k, 0, 16),
+			)
 		);
 		if let Some(v) = v {
 			ensure_with!(
@@ -265,13 +298,17 @@ pub async fn create_build(
 	body: models::ActorPrepareBuildRequest,
 	query: GlobalQuery,
 ) -> GlobalResult<models::ActorPrepareBuildResponse> {
-	let CheckOutput { env_id, .. } = ctx.auth().check(ctx.op_ctx(), &query, false).await?;
-
-	ensure_with!(
-		body.name.len() <= 128,
-		ACTOR_BUILD_INVALID_CONFIG,
-		error = "Build name too large (max 128 bytes)."
-	);
+	let CheckOutput { env_id, .. } = ctx
+		.auth()
+		.check(
+			ctx.op_ctx(),
+			CheckOpts {
+				query: &query,
+				allow_service_token: true,
+				opt_auth: false,
+			},
+		)
+		.await?;
 
 	let (kind, image_tag) = match body.kind {
 		Option::None | Some(models::ActorBuildKind::DockerImage) => (
@@ -299,7 +336,7 @@ pub async fn create_build(
 	let create_res = ctx
 		.op(build::ops::create::Input {
 			owner: build::ops::create::Owner::Env(env_id),
-			display_name: body.name,
+			display_name: util::faker::display_name(),
 			content: build::ops::create::Content::New {
 				image_file: (*body.image_file).api_try_into()?,
 				image_tag,
@@ -342,7 +379,6 @@ pub async fn create_build_deprecated(
 				models::ServersBuildKind::DockerImage => models::ActorBuildKind::DockerImage,
 				models::ServersBuildKind::OciBundle => models::ActorBuildKind::OciBundle,
 			}),
-			name: body.name,
 		},
 		global,
 	)
@@ -376,7 +412,17 @@ pub async fn complete_build(
 	_body: serde_json::Value,
 	query: GlobalQuery,
 ) -> GlobalResult<serde_json::Value> {
-	let CheckOutput { env_id, .. } = ctx.auth().check(ctx.op_ctx(), &query, false).await?;
+	let CheckOutput { env_id, .. } = ctx
+		.auth()
+		.check(
+			ctx.op_ctx(),
+			CheckOpts {
+				query: &query,
+				allow_service_token: true,
+				opt_auth: false,
+			},
+		)
+		.await?;
 
 	let build_res = op!([ctx] build_get {
 		build_ids: vec![build_id.into()],

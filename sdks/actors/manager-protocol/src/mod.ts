@@ -1,9 +1,20 @@
-import { ActorQuery } from "./query.ts";
+import { z } from "zod";
+import { ActorQuerySchema } from "./query.ts";
 
-export interface ActorsRequest {
-	query: ActorQuery,
-}
+export const ActorsRequestSchema = z.object({
+	query: ActorQuerySchema,
+});
 
-export interface ActorsResponse {
-	endpoint: string,
-}
+export const ActorsResponseSchema = z.object({
+	endpoint: z.string(),
+});
+
+export const RivetConfigResponseSchema = z.object({
+	endpoint: z.string(),
+	project: z.string().optional(),
+	environment: z.string().optional(),
+});
+
+export type ActorsRequest = z.infer<typeof ActorsRequestSchema>;
+export type ActorsResponse = z.infer<typeof ActorsResponseSchema>;
+export type RivetConfigResponse = z.infer<typeof RivetConfigResponseSchema>;

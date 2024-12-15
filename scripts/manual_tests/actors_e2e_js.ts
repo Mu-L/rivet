@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-net --allow-env --allow-read
+#!/usr/bin/env -S deno run --allow-net --allow-env --allow-read --allow-run
 
 // Import necessary modules
 import { resolve } from "https://deno.land/std@0.114.0/path/mod.ts";
@@ -87,7 +87,7 @@ async function createActor(region: string, buildId: string) {
 
 	while (true) {
 		const { actor } = await httpRequest("GET", `${ENDPOINT}/actors/${createResponse.actor.id}`);
-		if (actor.network.ports.http.public_hostname != null) {
+		if (actor.network.ports.http.hostname != null) {
 			return actor;
 		} else {
 			await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -101,7 +101,7 @@ async function pingActor(actor) {
 			console.log("Pinging actor");
 
 			const response = await fetch(
-				`http://${actor.network.ports.http.public_hostname}:${actor.network.ports.http.public_port}`,
+				`http://${actor.network.ports.http.hostname}:${actor.network.ports.http.port}`,
 				{
 					method: "POST",
 					body: "foo",

@@ -1,0 +1,10 @@
+*
+
+!Cargo.lock
+!Cargo.toml
+!sdks/api/full/rust/Cargo.toml
+!sdks/api/full/rust/src
+!packages
+!resources/legacy/proto
+
+svc/**/*.md

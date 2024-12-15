@@ -1,3 +1,7 @@
+// DO NOT MODIFY
+//
+// Generated from sdks/actors-bridge/
+
 export interface Metadata {
 	actor: {
 		id: string;
@@ -46,4 +50,3 @@ export type ListQuery = {
 	rangeExclusive?: [Uint8Array[], InKey];
 	prefix?: Uint8Array[];
 };
-

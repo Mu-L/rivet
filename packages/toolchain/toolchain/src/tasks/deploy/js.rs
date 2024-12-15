@@ -1,8 +1,12 @@
 use anyhow::*;
 use futures_util::{StreamExt, TryStreamExt};
 use rivet_api::{apis, models};
-use std::{path::PathBuf, sync::Arc, collections::HashMap};
-use tokio::fs;
+use std::{
+	collections::HashMap,
+	path::{Path, PathBuf},
+	sync::Arc,
+};
+use tokio::{fs, process::Command};
 use uuid::Uuid;
 
 use crate::{
@@ -19,7 +23,6 @@ pub struct BuildAndUploadOpts {
 	pub env: TEMPEnvironment,
 	pub tags: HashMap<String, String>,
 	pub build_config: config::build::javascript::Build,
-	pub version_name: String,
 }
 
 /// Builds image if not specified and returns the build ID.
@@ -35,6 +38,10 @@ pub async fn build_and_upload(
 	// Create dir to write build artifacts to
 	let build_dir = tempfile::TempDir::new()?;
 
+	if opts.build_config.unstable.dump_build() {
+		task.log(format!("[Build Path] {}", build_dir.path().display()));
+	}
+
 	// Bundle JS
 	match opts.build_config.bundler() {
 		config::build::javascript::Bundler::Deno => {
@@ -47,22 +54,43 @@ pub async fn build_and_upload(
 			);
 
 			// Search for deno.json or deno.jsonc
-			let deno_config_path = ["deno.json", "deno.jsonc"].iter().find_map(|file_name| {
-				let path = project_root.join(file_name);
-				if path.exists() {
-					Some(path.display().to_string())
+			let config_path = if let Some(config_path) = opts.build_config.deno.config_path.clone()
+			{
+				Some(config_path)
+			} else {
+				["deno.json", "deno.jsonc"].iter().find_map(|file_name| {
+					let path = project_root.join(file_name);
+					if path.exists() {
+						Some(path.display().to_string())
+					} else {
+						None
+					}
+				})
+			};
+
+			// Search for a Deno lockfile
+			let lock_path = if let Some(lock_path) = opts.build_config.deno.lock_path.clone() {
+				Some(lock_path)
+			} else {
+				let project_deno_lockfile_path = project_root.join("deno.lock");
+				if project_deno_lockfile_path.exists() {
+					Some(project_deno_lockfile_path.display().to_string())
 				} else {
 					None
 				}
-			});
-
-			// Search for a Deno lockfile
-			let project_deno_lockfile_path = project_root.join("deno.lock");
-			let deno_lockfile_path = if project_deno_lockfile_path.exists() {
-				Some(project_deno_lockfile_path.display().to_string())
-			} else {
-				opts.build_config.deno.lock_path.clone()
 			};
+
+			// Define paths
+			let import_map_url = opts.build_config.deno.import_map_url.clone();
+
+			// Check the project before deploying
+			deno_check_script(CheckOpts {
+				script_path: &script_path,
+				config_path: config_path.as_deref(),
+				import_map_url: import_map_url.as_deref(),
+				lock_path: lock_path.as_deref(),
+			})
+			.await?;
 
 			// Build the bundle to the output dir. This will bundle all Deno dependencies into a
 			// single JS file.
@@ -78,14 +106,9 @@ pub async fn build_and_upload(
 					entry_point: script_path,
 					out_dir: build_dir.path().to_path_buf(),
 					deno: js_utils::schemas::build::Deno {
-						config_path: deno_config_path.or_else(|| {
-							opts.build_config
-								.deno
-								.config_path
-								.map(|x| project_root.join(x).display().to_string())
-						}),
-						import_map_url: opts.build_config.deno.import_map_url.clone(),
-						lock_path: deno_lockfile_path,
+						config_path,
+						import_map_url,
+						lock_path,
 					},
 					bundle: js_utils::schemas::build::Bundle {
 						minify: opts.build_config.unstable.minify(),
@@ -128,19 +151,69 @@ pub async fn build_and_upload(
 		task.clone(),
 		&UploadBundleOpts {
 			env: opts.env,
-			version_name: opts.version_name,
 			build_path: build_dir.path().into(),
 			compression: opts.build_config.unstable.compression(),
 		},
 	)
 	.await?;
 
+	// Retain build folder
+	if opts.build_config.unstable.dump_build() {
+		let _ = build_dir.into_path();
+	}
+
 	Ok(build_id)
+}
+
+struct CheckOpts<'a> {
+	script_path: &'a Path,
+	config_path: Option<&'a str>,
+	import_map_url: Option<&'a str>,
+	lock_path: Option<&'a str>,
+}
+
+async fn deno_check_script(opts: CheckOpts<'_>) -> Result<()> {
+	let deno_exec = deno_embed::get_executable(&paths::data_dir()?).await?;
+
+	let mut check_cmd = Command::new(&deno_exec.executable_path);
+	check_cmd.current_dir(&paths::project_root()?);
+	check_cmd.env("DENO_NO_UPDATE_CHECK", "1");
+	check_cmd.arg("check");
+	if let Some(config_path) = &opts.config_path {
+		check_cmd.arg(format!("--config={config_path}"));
+	}
+	if let Some(url) = &opts.import_map_url {
+		check_cmd.arg(format!("--import-map={url}"));
+	}
+	if let Some(lock_path) = &opts.lock_path {
+		check_cmd.arg(format!("--lock={lock_path}"));
+	}
+	check_cmd.arg(opts.script_path);
+
+	let output = check_cmd
+		.output()
+		.await
+		.map_err(|err| anyhow!("Failed to run command: {err}"))?;
+
+	let stdout = String::from_utf8_lossy(&output.stdout);
+	let stderr = String::from_utf8_lossy(&output.stderr);
+
+	if output.status.success() {
+		Ok(())
+	} else {
+		let mut error_message = format!("Failed to check script: {}", output.status);
+		if !stdout.is_empty() {
+			error_message.push_str(&format!("\nstdout:\n{stdout}"));
+		}
+		if !stderr.is_empty() {
+			error_message.push_str(&format!("\nstderr:\n{stderr}"));
+		}
+		Err(anyhow!(error_message))
+	}
 }
 
 struct UploadBundleOpts {
 	env: TEMPEnvironment,
-	version_name: String,
 
 	/// Path to the root of the built files.
 	build_path: PathBuf,
@@ -201,7 +274,6 @@ async fn upload_bundle(
 	let prepare_res = apis::actor_builds_api::actor_builds_prepare(
 		&ctx.openapi_config_cloud,
 		models::ActorPrepareBuildRequest {
-			name: push_opts.version_name.clone(),
 			image_tag: None,
 			image_file: Box::new(image_file.prepared),
 			kind: Some(build_kind),
@@ -258,6 +330,6 @@ async fn upload_bundle(
 		task.log(format!("{err:?}"));
 	}
 	complete_res.context("complete_res")?;
-
+    
 	Ok(prepare_res.build)
 }

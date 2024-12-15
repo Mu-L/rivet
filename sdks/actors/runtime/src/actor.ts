@@ -1,18 +1,28 @@
-import { ActorContext } from "@rivet-gg/actors-core";
-import { deadline } from "@std/async/deadline";
-import { Context as HonoContext, Hono } from "hono";
-import { WSEvents } from "hono/ws";
-import { upgradeWebSocket } from "hono/deno";
 import { Lock } from "@core/asyncutil/lock";
-import { ActorConfig, mergeActorConfig } from "./config.ts";
+import type { ActorContext } from "@rivet-gg/actors-core";
+import { assertExists, assertInstanceOf } from "@std/assert";
+import { deadline } from "@std/async/deadline";
+import { throttle } from "@std/async/unstable-throttle";
+import type { Logger } from "@std/log/get-logger";
+import { Hono, type Context as HonoContext } from "hono";
+import { upgradeWebSocket } from "hono/deno";
+import type { WSEvents } from "hono/ws";
 import onChange from "on-change";
-import { Connection } from "./connection.ts";
-import { Rpc } from "./rpc.ts";
-import * as wsToClient from "../../protocol/src/ws/to_client.ts";
-import * as wsToServer from "../../protocol/src/ws/to_server.ts";
-import { MAX_CONN_PARAMS_SIZE } from "../../common/src/network.ts";
+import { setupLogging } from "../../common/src/log.ts";
 import { assertUnreachable } from "../../common/src/utils.ts";
-import { assertExists } from "@std/assert";
+import { ProtocolFormatSchema } from "../../protocol/src/ws/mod.ts";
+import type * as wsToClient from "../../protocol/src/ws/to_client.ts";
+import * as wsToServer from "../../protocol/src/ws/to_server.ts";
+import { type ActorConfig, mergeActorConfig } from "./config.ts";
+import {
+	Connection,
+	type ConnectionId,
+	type IncomingWebSocketMessage,
+	type OutgoingWebSocketMessage,
+} from "./connection.ts";
+import * as errors from "./errors.ts";
+import { instanceLogger, logger } from "./log.ts";
+import { Rpc } from "./rpc.ts";
 
 const KEYS = {
 	SCHEDULE: {
@@ -53,17 +63,31 @@ function isJsonSerializable(value: unknown): boolean {
 	return false;
 }
 
-export interface OnBeforeConnectOpts<ConnParams> {
+export interface OnBeforeConnectOptions<ConnParams> {
 	request: Request;
 	parameters: ConnParams;
 }
+
+export interface SaveStateOptions {
+	/**
+	 * Forces the state to be saved immediately. This function will return when the state has save successfully.
+	 */
+	immediate?: boolean;
+}
+
+/** Actor type alias with all `any` types. Used for `extends` in classes referencing this actor. */
+// biome-ignore lint/suspicious/noExplicitAny: Needs to be used in `extends`
+export type AnyActor = Actor<any, any, any>;
 
 export abstract class Actor<
 	State = undefined,
 	ConnParams = undefined,
 	ConnState = undefined,
 > {
-	#stateChanged: boolean = false;
+	// Store the init promise so network requests can await initialization
+	#initializedPromise?: Promise<void>;
+
+	#stateChanged = false;
 
 	/**
 	 * The proxied state that notifies of changes automatically.
@@ -75,47 +99,32 @@ export abstract class Actor<
 	/** Raw state without the proxy wrapper */
 	#stateRaw!: State;
 
-	#saveStateLock = new Lock<void>(void 0);
-
+	#server?: Deno.HttpServer<Deno.NetAddr>;
 	#backgroundPromises: Promise<void>[] = [];
 	#config: ActorConfig;
 	#ctx!: ActorContext;
-	#ready: boolean = false;
+	#ready = false;
 
-	#connectionIdCounter: number = 0;
-	#connections = new Set<Connection<this>>();
+	#connectionIdCounter = 0;
+	#connections = new Map<ConnectionId, Connection<this>>();
 	#eventSubscriptions = new Map<string, Set<Connection<this>>>();
 
 	protected constructor(config?: Partial<ActorConfig>) {
 		this.#config = mergeActorConfig(config);
+
+		this.#saveStateThrottled = throttle(() => {
+			this.#saveStateInner().catch((error) => {
+				logger().error("failed to save state", { error });
+			});
+		}, this.#config.state.saveInterval);
 	}
-
-	protected get connections(): Set<Connection<this>> {
-		return this.#connections;
-	}
-
-	protected _onInitialize?(): State | Promise<State>;
-
-	protected _onStart?(): void | Promise<void>;
-
-	protected _onStateChange?(newState: State): void | Promise<void>;
-
-	protected _onBeforeConnect?(
-		opts: OnBeforeConnectOpts<ConnParams>,
-	): ConnState | Promise<ConnState>;
-
-	protected _onConnect?(
-		connection: Connection<this>,
-	): void | Promise<void>;
-
-	protected _onDisconnect?(
-		connection: Connection<this>,
-	): void | Promise<void>;
 
 	// This is called by Rivet when the actor is exported as the default
 	// property
 	public static start(ctx: ActorContext) {
-		// deno-lint-ignore no-explicit-any
+		setupLogging();
+
+		// biome-ignore lint/complexity/noThisInStatic lint/suspicious/noExplicitAny: Needs to construct self
 		const instance = new (this as any)() as Actor;
 		return instance.#run(ctx);
 	}
@@ -123,49 +132,76 @@ export abstract class Actor<
 	async #run(ctx: ActorContext) {
 		this.#ctx = ctx;
 
-		await this.#initializeState();
-
+		// Run server immediately since init might take a few ms
 		this.#runServer();
 
+		// Initialize server
+		//
+		// Store the promise so network requests can await initialization
+		this.#initializedPromise = this.#initializeState();
+		await this.#initializedPromise;
+		this.#initializedPromise = undefined;
+
 		// TODO: Exit process if this errors
-		console.log("calling start");
+		logger().info("starting");
 		await this._onStart?.();
 
-		console.log("ready");
+		logger().info("ready");
 		this.#ready = true;
 	}
 
-	protected get state(): State {
-		this.#validateStateEnabled();
-		return this.#stateProxy;
-	}
-
-	protected set state(value: State) {
-		this.#validateStateEnabled();
-		this.#setStateWithoutChange(value);
-		this.#stateChanged = true;
-	}
-
 	get #stateEnabled() {
-		return typeof this._onInitialize == "function";
+		return typeof this._onInitialize === "function";
 	}
 
 	#validateStateEnabled() {
 		if (!this.#stateEnabled) {
-			throw new Error(
-				"State not enabled. Must implement createState to use state.",
-			);
+			throw new errors.StateNotEnabled();
 		}
 	}
 
 	get #connectionStateEnabled() {
-		return typeof this._onBeforeConnect == "function";
+		return typeof this._onBeforeConnect === "function";
+	}
+
+	#saveStateLock = new Lock<void>(void 0);
+
+	/** Throttled save state method. Used to write to KV at a reasonable cadence. */
+	#saveStateThrottled: () => void;
+
+	/** Promise used to wait for a save to complete. This is required since you cannot await `#saveStateThrottled`. */
+	#onStateSavedPromise?: PromiseWithResolvers<void>;
+
+	/** Saves the state to the database. You probably want to use #saveStateThrottled instead except for a few edge cases. */
+	async #saveStateInner() {
+		try {
+			if (this.#stateChanged) {
+				// Use a lock in order to avoid race conditions with multiple
+				// parallel promises writing to KV. This should almost never happen
+				// unless there are abnormally high latency in KV writes.
+				await this.#saveStateLock.lock(async () => {
+					logger().debug("saving state");
+
+					// There might be more changes while we're writing, so we set this
+					// before writing to KV in order to avoid a race condition.
+					this.#stateChanged = false;
+
+					// Write to KV
+					await this.#ctx.kv.put(KEYS.STATE.DATA, this.#stateRaw);
+				});
+			}
+
+			this.#onStateSavedPromise?.resolve();
+		} catch (error) {
+			this.#onStateSavedPromise?.reject(error);
+			throw error;
+		}
 	}
 
 	/** Updates the state and creates a new proxy. */
 	#setStateWithoutChange(value: State) {
 		if (!isJsonSerializable(value)) {
-			throw new Error("State must be JSON serializable");
+			throw new errors.InvalidStateType();
 		}
 		this.#stateProxy = this.#createStateProxy(value);
 		this.#stateRaw = value;
@@ -175,7 +211,7 @@ export abstract class Actor<
 		// If this can't be proxied, return raw value
 		if (target === null || typeof target !== "object") {
 			if (!isJsonSerializable(target)) {
-				throw new Error("State value must be JSON serializable");
+				throw new errors.InvalidStateType();
 			}
 			return target;
 		}
@@ -188,12 +224,10 @@ export abstract class Actor<
 		// Listen for changes to the object in order to automatically write state
 		return onChange(
 			target,
-			// deno-lint-ignore no-explicit-any
+			// biome-ignore lint/suspicious/noExplicitAny: Don't know types in proxy
 			(path: any, value: any, _previousValue: any, _applyData: any) => {
 				if (!isJsonSerializable(value)) {
-					throw new Error(
-						`State value at path "${path}" must be JSON serializable`,
-					);
+					throw new errors.InvalidStateType({ path });
 				}
 				this.#stateChanged = true;
 
@@ -201,8 +235,8 @@ export abstract class Actor<
 				if (this._onStateChange && this.#ready) {
 					try {
 						this._onStateChange(this.#stateRaw);
-					} catch (err) {
-						console.error("Error from onStateChange:", err);
+					} catch (error) {
+						logger().error("error in `_onStateChange`", { error });
 					}
 				}
 			},
@@ -214,7 +248,7 @@ export abstract class Actor<
 
 	async #initializeState() {
 		if (!this.#stateEnabled) {
-			console.log("State not enabled");
+			logger().debug("state not enabled");
 			return;
 		}
 		assertExists(this._onInitialize);
@@ -224,12 +258,12 @@ export abstract class Actor<
 			KEYS.STATE.INITIALIZED,
 			KEYS.STATE.DATA,
 		]);
-		const initialized = getStateBatch.get(KEYS.STATE.INITIALIZED);
-		const stateData = getStateBatch.get(KEYS.STATE.DATA);
+		const initialized = getStateBatch.get(KEYS.STATE.INITIALIZED) as boolean;
+		const stateData = getStateBatch.get(KEYS.STATE.DATA) as State;
 
 		if (!initialized) {
 			// Initialize
-			console.log("initializing");
+			logger().info("initializing");
 			const stateOrPromise = await this._onInitialize();
 
 			let stateData: State;
@@ -240,7 +274,7 @@ export abstract class Actor<
 			}
 
 			// Update state
-			console.log("writing initial state");
+			logger().debug("writing state");
 			await this.#ctx.kv.putBatch(
 				new Map<unknown, unknown>([
 					[KEYS.STATE.INITIALIZED, true],
@@ -250,7 +284,7 @@ export abstract class Actor<
 			this.#setStateWithoutChange(stateData);
 		} else {
 			// Save state
-			console.log("found existing state");
+			logger().debug("already initialized");
 			this.#setStateWithoutChange(stateData);
 		}
 	}
@@ -272,8 +306,8 @@ export abstract class Actor<
 		});
 
 		const port = this.#getServerPort();
-		console.log(`server running on ${port}`);
-		Deno.serve({ port, hostname: "0.0.0.0" }, app.fetch);
+		logger().info("server running", { port });
+		this.#server = Deno.serve({ port, hostname: "0.0.0.0" }, app.fetch);
 	}
 
 	#getServerPort(): number {
@@ -281,8 +315,8 @@ export abstract class Actor<
 		if (!portStr) {
 			throw "Missing port";
 		}
-		const port = parseInt(portStr);
-		if (!isFinite(port)) {
+		const port = Number.parseInt(portStr);
+		if (!Number.isFinite(port)) {
 			throw "Invalid port";
 		}
 
@@ -291,6 +325,7 @@ export abstract class Actor<
 
 	// MARK: RPC
 	//async #handleRpc(c: HonoContext): Promise<Response> {
+	//  // TODO: Wait for initialize
 	//	try {
 	//		const rpcName = c.req.param("name");
 	//		const requestBody = await c.req.json<httpRpc.Request<unknown[]>>();
@@ -299,7 +334,7 @@ export abstract class Actor<
 	//		const output = await this.#executeRpc(ctx, rpcName, requestBody.args);
 	//		return c.json({ output });
 	//	} catch (error) {
-	//		console.error("RPC Error:", error);
+	//		logger().error("RPC Error:", error);
 	//		return c.json({ error: String(error) }, 500);
 	//	} finally {
 	//		await this.forceSaveState();
@@ -348,30 +383,46 @@ export abstract class Actor<
 
 	// MARK: WebSocket
 	async #handleWebSocket(c: HonoContext): Promise<WSEvents<WebSocket>> {
+		// Wait for init to finish
+		if (this.#initializedPromise) await this.#initializedPromise;
+
 		// TODO: Handle timeouts opening socket
 
 		// Validate protocol
 		const protocolVersion = c.req.query("version");
-		if (protocolVersion != "1") {
-			throw new Error(`Invalid protocol version: ${protocolVersion}`);
+		if (protocolVersion !== "1") {
+			logger().warn("invalid protocol version", { protocolVersion });
+			throw new errors.InvalidProtocolVersion(protocolVersion);
+		}
+
+		const protocolFormatRaw = c.req.query("format");
+		const { data: protocolFormat, success } =
+			ProtocolFormatSchema.safeParse(protocolFormatRaw);
+		if (!success) {
+			logger().warn("invalid protocol format", {
+				protocolFormat: protocolFormatRaw,
+			});
+			throw new errors.InvalidProtocolFormat(protocolFormatRaw);
 		}
 
 		// Validate params size (limiting to 4KB which is reasonable for query params)
 		const paramsStr = c.req.query("params");
-		if (paramsStr && paramsStr.length > MAX_CONN_PARAMS_SIZE) {
-			throw new Error(
-				`WebSocket params too large (max ${MAX_CONN_PARAMS_SIZE} bytes)`,
-			);
+		if (
+			paramsStr &&
+			paramsStr.length > this.#config.protocol.maxConnectionParametersSize
+		) {
+			logger().warn("connection parameters too long");
+			throw new errors.ConnectionParametersTooLong();
 		}
 
 		// Parse and validate params
 		let params: ConnParams;
 		try {
-			params = typeof paramsStr === "string"
-				? JSON.parse(paramsStr)
-				: undefined;
-		} catch (err) {
-			throw new Error(`Invalid WebSocket params: ${err}`);
+			params =
+				typeof paramsStr === "string" ? JSON.parse(paramsStr) : undefined;
+		} catch (error) {
+			logger().warn("malformed connection parameters", { error });
+			throw new errors.MalformedConnectionParameters(error);
 		}
 
 		// Authenticate connection
@@ -397,109 +448,163 @@ export abstract class Actor<
 				// If `_onBeforeConnect` is not defined and `state` is
 				// undefined, there will be a runtime error when attempting to
 				// read it
+				const connectionId = this.#connectionIdCounter;
 				this.#connectionIdCounter += 1;
 				// TODO: As any
-				conn = new Connection<Actor<State, ConnParams, ConnState>>(this.#connectionIdCounter, ws, state!, this.#connectionStateEnabled);
-				this.#connections.add(conn);
+				conn = new Connection<Actor<State, ConnParams, ConnState>>(
+					connectionId,
+					ws,
+					protocolFormat,
+					state,
+					this.#connectionStateEnabled,
+				);
+				this.#connections.set(conn.id, conn);
 
 				// Handle connection
 				const CONNECT_TIMEOUT = 5000; // 5 seconds
 				if (this._onConnect) {
 					const voidOrPromise = this._onConnect(conn);
 					if (voidOrPromise instanceof Promise) {
-						deadline(voidOrPromise, CONNECT_TIMEOUT)
-							.catch((err) => {
-								console.error("Error in `onConnect`, closing socket:", err);
-								conn?.disconnect("`onConnect` failed");
+						deadline(voidOrPromise, CONNECT_TIMEOUT).catch((error) => {
+							logger().error("error in `_onConnect`, closing socket", {
+								error,
 							});
+							conn?.disconnect("`onConnect` failed");
+						});
 					}
 				}
 			},
-			onMessage: async (evt, ws) => {
+			onMessage: async (evt) => {
 				if (!conn) {
-					console.warn("`conn` does not exist");
+					logger().warn("`conn` does not exist");
 					return;
 				}
 
-				let rpcRequestId: string | undefined;
+				let rpcRequestId: number | undefined;
 				try {
-					const value = evt.data.valueOf();
-					if (typeof value != "string") {
-						throw new Error("message must be string");
-					}
-					// TODO: Validate message
-					const message: wsToServer.ToServer = JSON.parse(value);
+					const value = evt.data.valueOf() as IncomingWebSocketMessage;
 
-					if ("rpcRequest" in message.body) {
-						const { id, name, args = [] } = message.body.rpcRequest;
+					// Validate value length
+					let length: number;
+					if (typeof value === "string") {
+						length = value.length;
+					} else if (value instanceof Blob) {
+						length = value.size;
+					} else if (
+						value instanceof ArrayBuffer ||
+						value instanceof SharedArrayBuffer
+					) {
+						length = value.byteLength;
+					} else {
+						assertUnreachable(value);
+					}
+					if (length > this.#config.protocol.maxIncomingMessageSize) {
+						throw new errors.MessageTooLong();
+					}
+
+					// Parse & validate message
+					const {
+						data: message,
+						success,
+						error,
+					} = wsToServer.ToServerSchema.safeParse(await conn._parse(value));
+					if (!success) {
+						throw new errors.MalformedMessage(error);
+					}
+
+					if ("rr" in message.body) {
+						// RPC request
+
+						const { i: id, n: name, a: args = [] } = message.body.rr;
+
 						rpcRequestId = id;
 
 						const ctx = new Rpc<this>(conn);
 						const output = await this.#executeRpc(ctx, name, args);
 
-						ws.send(
-							JSON.stringify(
-								{
-									body: {
-										rpcResponseOk: {
-											id,
-											output,
-										},
+						conn._sendWebSocketMessage(
+							conn._serialize({
+								body: {
+									ro: {
+										i: id,
+										o: output,
 									},
-								} satisfies wsToClient.ToClient,
-							),
+								},
+							} satisfies wsToClient.ToClient),
 						);
-					} else if ("subscriptionRequest" in message.body) {
-						if (message.body.subscriptionRequest.subscribe) {
-							this.#addSubscription(
-								message.body.subscriptionRequest.eventName,
-								conn,
-							);
+					} else if ("sr" in message.body) {
+						// Subscription request
+
+						const { e: eventName, s: subscribe } = message.body.sr;
+
+						if (subscribe) {
+							this.#addSubscription(eventName, conn);
 						} else {
-							this.#removeSubscription(
-								message.body.subscriptionRequest.eventName,
-								conn,
-							);
+							this.#removeSubscription(eventName, conn);
 						}
 					} else {
 						assertUnreachable(message.body);
 					}
-				} catch (err) {
-					if (rpcRequestId) {
-						ws.send(
-							JSON.stringify(
-								{
-									body: {
-										rpcResponseError: {
-											id: rpcRequestId,
-											message: String(err),
-										},
+				} catch (error) {
+					// Build response error information. Only return errors if flagged as public in order to prevent leaking internal behavior.
+					let code: string;
+					let message: string;
+					let metadata: unknown = undefined;
+					if (error instanceof errors.ActorError && error.public) {
+						logger().info("connection public error", {
+							rpc: rpcRequestId,
+							error,
+						});
+
+						code = error.code;
+						message = String(error);
+						metadata = error.metadata;
+					} else {
+						logger().warn("connection internal error", {
+							rpc: rpcRequestId,
+							error,
+						});
+
+						code = errors.INTERNAL_ERROR_CODE;
+						message = errors.INTERNAL_ERROR_DESCRIPTION;
+					}
+
+					// Build response
+					if (rpcRequestId !== undefined) {
+						conn._sendWebSocketMessage(
+							conn._serialize({
+								body: {
+									re: {
+										i: rpcRequestId,
+										c: code,
+										m: message,
+										md: metadata,
 									},
-								} satisfies wsToClient.ToClient,
-							),
+								},
+							} satisfies wsToClient.ToClient),
 						);
 					} else {
-						ws.send(
-							JSON.stringify(
-								{
-									body: {
-										error: {
-											message: String(err),
-										},
+						conn._sendWebSocketMessage(
+							conn._serialize({
+								body: {
+									er: {
+										c: code,
+										m: message,
+										md: metadata,
 									},
-								} satisfies wsToClient.ToClient,
-							),
+								},
+							} satisfies wsToClient.ToClient),
 						);
 					}
 				}
 			},
 			onClose: () => {
 				if (!conn) {
-					console.warn!("`conn` does not exist");
+					logger().warn("`conn` does not exist");
 					return;
 				}
 
-				this.#connections.delete(conn);
+				this.#connections.delete(conn.id);
 
 				// Remove subscriptions
 				for (const eventName of [...conn.subscriptions.values()]) {
@@ -508,17 +613,16 @@ export abstract class Actor<
 
 				this._onDisconnect?.(conn);
 			},
-			onError: (evt) => {
+			onError: (error) => {
 				// Actors don't need to know about this, since it's abstracted
 				// away
-				console.warn("WebSocket error:", evt);
+				logger().warn("websocket error", { error });
 			},
 		};
 	}
 
-
 	#assertReady() {
-		if (!this.#ready) throw new Error("Actor not ready");
+		if (!this.#ready) throw new errors.InternalError("Actor not ready");
 	}
 
 	async #executeRpc(
@@ -528,14 +632,16 @@ export abstract class Actor<
 	): Promise<unknown> {
 		// Prevent calling private or reserved methods
 		if (!this.#isValidRpc(rpcName)) {
-			throw new Error(`RPC ${rpcName} is not accessible`);
+			logger().warn("attempted to call invalid rpc", { rpcName });
+			throw new errors.RpcNotFound();
 		}
 
 		// Check if the method exists on this object
-		// deno-lint-ignore no-explicit-any
+		// biome-ignore lint/suspicious/noExplicitAny: RPC name is dynamic from client
 		const rpcFunction = (this as any)[rpcName];
 		if (typeof rpcFunction !== "function") {
-			throw new Error(`RPC ${rpcName} not found`);
+			logger().warn("rpc not found", { rpcName });
+			throw new errors.RpcNotFound();
 		}
 
 		// TODO: pass abortable to the rpc to decide when to abort
@@ -549,37 +655,83 @@ export abstract class Actor<
 				return outputOrPromise;
 			}
 		} catch (error) {
-			if (error instanceof DOMException && error.name == "TimeoutError") {
-				throw new Error(`RPC ${rpcName} timed out`);
+			if (error instanceof DOMException && error.name === "TimeoutError") {
+				throw new errors.RpcTimedOut();
 			} else {
-				throw new Error(`RPC ${rpcName} failed: ${String(error)}`);
+				throw error;
 			}
+		} finally {
+			this.#saveStateThrottled();
 		}
 	}
 
+	// MARK: Lifecycle hooks
+	protected _onInitialize?(): State | Promise<State>;
+
+	protected _onStart?(): void | Promise<void>;
+
+	protected _onStateChange?(newState: State): void | Promise<void>;
+
+	protected _onBeforeConnect?(
+		opts: OnBeforeConnectOptions<ConnParams>,
+	): ConnState | Promise<ConnState>;
+
+	protected _onConnect?(connection: Connection<this>): void | Promise<void>;
+
+	protected _onDisconnect?(connection: Connection<this>): void | Promise<void>;
+
 	// MARK: Exposed methods
+	protected get _log(): Logger {
+		return instanceLogger();
+	}
+
+	protected get _connections(): Map<ConnectionId, Connection<this>> {
+		return this.#connections;
+	}
+
+	protected get _state(): State {
+		this.#validateStateEnabled();
+		return this.#stateProxy;
+	}
+
+	protected set _state(value: State) {
+		this.#validateStateEnabled();
+		this.#setStateWithoutChange(value);
+		this.#stateChanged = true;
+	}
+
 	/**
 	 * Broadcasts an event to all connected clients.
 	 */
-	protected _broadcast<Args extends Array<unknown>>(name: string, ...args: Args) {
+	protected _broadcast<Args extends Array<unknown>>(
+		name: string,
+		...args: Args
+	) {
 		this.#assertReady();
 
 		// Send to all connected clients
 		const subscriptions = this.#eventSubscriptions.get(name);
 		if (!subscriptions) return;
 
-		const body = JSON.stringify(
-			{
-				body: {
-					event: {
-						name,
-						args,
-					},
+		const toClient: wsToClient.ToClient = {
+			body: {
+				ev: {
+					n: name,
+					a: args,
 				},
-			} satisfies wsToClient.ToClient,
-		);
+			},
+		};
+
+		// Send message to clients
+		const serialized: Record<string, OutgoingWebSocketMessage> = {};
 		for (const connection of subscriptions) {
-			connection._sendWebSocketMessage(body);
+			// Lazily serialize the appropriate format
+			if (!(connection._protocolFormat in serialized)) {
+				serialized[connection._protocolFormat] =
+					connection._serialize(toClient);
+			}
+
+			connection._sendWebSocketMessage(serialized[connection._protocolFormat]);
 		}
 	}
 
@@ -595,13 +747,11 @@ export abstract class Actor<
 		// TODO: Should we force save the state?
 		// Add logging to promise and make it non-failable
 		const nonfailablePromise = promise
-			.then(() => console.log("background promise complete"))
-			.catch((err) => {
-				console.error("background promise failed", err);
-				// ctx.log.error(
-				// 	"background promise failed",
-				// 	...errorToLogEntries("error", err),
-				// )
+			.then(() => {
+				logger().debug("background promise complete");
+			})
+			.catch((error) => {
+				logger().error("background promise failed", { error });
 			});
 		this.#backgroundPromises.push(nonfailablePromise);
 	}
@@ -609,27 +759,66 @@ export abstract class Actor<
 	/**
 	 * Forces the state to get saved.
 	 *
-	 * This is helpful if running a long task that may fail later or a background
-	 * job that updates the state.
+	 * This is helpful if running a long task that may fail later or when
+	 * running a background job that updates the state.
 	 */
-	protected async _forceSaveState() {
+	protected async _saveState(opts: SaveStateOptions) {
 		this.#assertReady();
 
-		// Use a lock in order to avoid race conditions with writing to KV
-		await this.#saveStateLock.lock(async () => {
-			if (this.#stateChanged) {
-				console.log("saving state");
-
-				// There might be more changes while we're writing, so we set
-				// this before writing to KV in order to avoid a race
-				// condition.
-				this.#stateChanged = false;
-
-				// Write to KV
-				await this.#ctx.kv.put(KEYS.STATE.DATA, this.#stateRaw);
+		if (this.#stateChanged) {
+			if (opts.immediate) {
+				// Save immediately
+				await this.#saveStateInner();
 			} else {
-				console.log("skipping save, state not modified");
+				// Create callback
+				if (!this.#onStateSavedPromise) {
+					this.#onStateSavedPromise = Promise.withResolvers();
+				}
+
+				// Save state throttled
+				this.#saveStateThrottled();
+
+				// Wait for save
+				await this.#onStateSavedPromise.promise;
 			}
-		});
+		}
+	}
+
+	protected async _shutdown() {
+		// Stop accepting new connections
+		if (this.#server) await this.#server.shutdown();
+
+		// Disconnect existing connections
+		const promises: Promise<unknown>[] = [];
+		for (const connection of this.#connections.values()) {
+			const raw = connection._websocket.raw;
+			if (!raw) continue;
+
+			// Create deferred promise
+			const { promise, resolve } = Promise.withResolvers();
+			assertExists(resolve, "resolve should be defined by now");
+
+			// Resolve promise when websocket closes
+			raw.addEventListener("close", resolve);
+
+			// Close connection
+			connection.disconnect();
+
+			promises.push(promise);
+		}
+
+		// Await all `close` event listeners with 1.5 second timeout
+		const res = Promise.race([
+			Promise.all(promises).then(() => false),
+			new Promise<boolean>((res) => setTimeout(() => res(true), 1500)),
+		]);
+
+		if (await res) {
+			logger().warn(
+				"timed out waiting for connections to close, shutting down anyway",
+			);
+		}
+
+		Deno.exit(0);
 	}
 }
