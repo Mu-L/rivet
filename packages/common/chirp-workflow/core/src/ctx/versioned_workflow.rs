@@ -47,7 +47,10 @@ impl<'a> VersionedWorkflowCtx<'a> {
 		self.inner
 	}
 
-	pub fn version(&self) -> usize {
+	// Handles version of branches via addition. If the inner workflow ctx is version 2 and this version is 2,
+	// the actual stored version will be 3. Not public because it just denotes the version of the context,
+	// use `check_version` instead.
+	fn version(&self) -> usize {
 		self.inner.version() + self.version - 1
 	}
 

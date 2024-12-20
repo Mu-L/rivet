@@ -67,6 +67,8 @@ pub struct Ctx {
 	pool: SqlitePool,
 	tx: Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>,
 	event_sender: EventSender,
+	// Cached addresses (should be sorted beforehand)
+	pub(crate) pull_addresses: Vec<String>,
 
 	pub(crate) actors: RwLock<HashMap<Uuid, Arc<Actor>>>,
 	isolate_runner: RwLock<Option<runner::Handle>>,
@@ -78,6 +80,7 @@ impl Ctx {
 		system: SystemInfo,
 		pool: SqlitePool,
 		tx: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+		pull_addresses: Vec<String>,
 	) -> Arc<Self> {
 		Arc::new(Ctx {
 			config,
@@ -86,6 +89,7 @@ impl Ctx {
 			pool,
 			tx: Mutex::new(tx),
 			event_sender: EventSender::new(),
+			pull_addresses,
 
 			actors: RwLock::new(HashMap::new()),
 			isolate_runner: RwLock::new(None),
@@ -195,6 +199,8 @@ impl Ctx {
 				match listener.accept().await {
 					Ok((stream, _)) => {
 						let mut socket = tokio_tungstenite::accept_async(stream).await?;
+
+						tracing::info!("received new socket");
 
 						if let Some(runner) = &*self2.isolate_runner.read().await {
 							runner.attach_socket(socket).await?;
@@ -609,7 +615,7 @@ impl Ctx {
 		if let Some(isolate_runner_pid) = isolate_runner_pid {
 			let mut guard = self.isolate_runner.write().await;
 
-			tracing::info!(?isolate_runner_pid, "found old isolate runner");
+			tracing::info!(?isolate_runner_pid, "found existing isolate runner");
 
 			let runner = runner::Handle::from_pid(
 				runner::Comms::socket(),

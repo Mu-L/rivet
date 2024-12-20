@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+	collections::{HashMap, HashSet},
+	time::Duration,
+};
 
 use build::types::{BuildCompression, BuildKind};
 use chirp_workflow::prelude::*;
@@ -9,9 +12,9 @@ use serde_json::json;
 use util::serde::AsHashableExt;
 
 use super::{
-	resolve_image_artifact_url, CreateComplete, Destroy, Drain, DrainState, Failed,
-	GetServerMetaInput, InsertDbInput, Port, Ready, SetConnectableInput, UpdateImageInput, Upgrade,
-	UpgradeComplete, UpgradeStarted, DRAIN_PADDING_MS, TRAEFIK_GRACE_PERIOD,
+	CreateComplete, Destroy, Drain, DrainState, Failed, GetServerMetaInput, GetServerMetaOutput,
+	InsertDbInput, Port, Ready, SetConnectableInput, UpdateImageInput, UpdateRescheduleRetryInput,
+	Upgrade, UpgradeComplete, UpgradeStarted, BASE_RETRY_TIMEOUT_MS, DRAIN_PADDING_MS,
 };
 use crate::types::{
 	GameGuardProtocol, HostProtocol, NetworkMode, Routing, ServerLifecycle, ServerResources,
@@ -44,7 +47,7 @@ pub(crate) struct Input {
 
 #[workflow]
 pub(crate) async fn ds_server_pegboard(ctx: &mut WorkflowCtx, input: &Input) -> GlobalResult<()> {
-	let res = setup(ctx, input, true, None).await;
+	let res = setup(ctx, input, SetupCtx::Init).await;
 	match ctx.catch_unrecoverable(res)? {
 		Ok(_actor_id) => {}
 		Err(err) => {
@@ -75,18 +78,43 @@ pub(crate) async fn ds_server_pegboard(ctx: &mut WorkflowCtx, input: &Input) -> 
 		.send()
 		.await?;
 
-	if let Some(sig) = wait_actor_ready(ctx, input.server_id).await? {
-		// Destroyed early
-		ctx.workflow(destroy::Input {
-			server_id: input.server_id,
-			override_kill_timeout_ms: sig.override_kill_timeout_ms,
-			signal_actor: true,
-		})
-		.output()
-		.await?;
+	let _client_id = match ctx.listen::<Init>().await? {
+		Init::ActorStateUpdate(sig) => match sig.state {
+			pp::ActorState::Allocated { client_id } => client_id,
+			pp::ActorState::FailedToAllocate => {
+				ctx.msg(Failed {
+					message: "Failed to allocate (no availability).".into(),
+				})
+				.tag("server_id", input.server_id)
+				.send()
+				.await?;
 
-		return Ok(());
-	}
+				ctx.workflow(destroy::Input {
+					server_id: input.server_id,
+					override_kill_timeout_ms: None,
+					signal_actor: false,
+				})
+				.output()
+				.await?;
+
+				bail!("failed to allocate actor");
+			}
+			state => bail!("unexpected actor state: {state:?}"),
+		},
+		Init::Destroy(sig) => {
+			tracing::debug!("destroying before actor start");
+
+			ctx.workflow(destroy::Input {
+				server_id: input.server_id,
+				override_kill_timeout_ms: sig.override_kill_timeout_ms,
+				signal_actor: true,
+			})
+			.output()
+			.await?;
+
+			return Ok(());
+		}
+	};
 
 	let state_res = ctx
 		.repeat(|ctx| {
@@ -109,8 +137,19 @@ pub(crate) async fn ds_server_pegboard(ctx: &mut WorkflowCtx, input: &Input) -> 
 							})
 							.await?;
 
-							// Wait for Traefik to be ready
-							ctx.sleep(TRAEFIK_GRACE_PERIOD).await?;
+							// Wait for Traefik to poll ports and update GG
+							let create_ts = ctx.ts();
+							match ctx.check_version(2).await? {
+								1 => ctx.removed::<Sleep>().await?,
+								_latest => {
+									ctx.activity(WaitForTraefikPollInput {
+										create_ts,
+										cluster_id: input.cluster_id,
+										datacenter_id: input.datacenter_id,
+									})
+									.await?;
+								}
+							}
 
 							let updated = ctx
 								.activity(SetConnectableInput {
@@ -276,37 +315,59 @@ pub(crate) async fn ds_server_pegboard(ctx: &mut WorkflowCtx, input: &Input) -> 
 	Ok(())
 }
 
+enum SetupCtx {
+	Init,
+	Reschedule { new_image_id: Option<Uuid> },
+}
+
+#[derive(Clone)]
+struct ActorSetupCtx {
+	actor_id: Uuid,
+	server_meta: GetServerMetaOutput,
+	resources: pp::Resources,
+	artifact_url_stub: String,
+	fallback_artifact_url: Option<String>,
+}
+
 async fn setup(
 	ctx: &mut WorkflowCtx,
 	input: &Input,
-	insert_db: bool,
-	new_image_id: Option<Uuid>,
-) -> GlobalResult<Uuid> {
-	if insert_db {
-		ctx.activity(InsertDbInput {
-			server_id: input.server_id,
-			env_id: input.env_id,
-			datacenter_id: input.datacenter_id,
-			cluster_id: input.cluster_id,
-			tags: input.tags.as_hashable(),
-			resources: input.resources.clone(),
-			lifecycle: input.lifecycle.clone(),
-			image_id: input.image_id,
-			args: input.args.clone(),
-			network_mode: input.network_mode,
-			environment: input.environment.as_hashable(),
-			network_ports: input.network_ports.as_hashable(),
-		})
-		.await?;
-	} else if let Some(image_id) = new_image_id {
-		ctx.activity(UpdateImageInput {
-			server_id: input.server_id,
-			image_id,
-		})
-		.await?;
-	}
+	setup: SetupCtx,
+) -> GlobalResult<ActorSetupCtx> {
+	let image_id = match &setup {
+		SetupCtx::Init => {
+			ctx.activity(InsertDbInput {
+				server_id: input.server_id,
+				env_id: input.env_id,
+				datacenter_id: input.datacenter_id,
+				cluster_id: input.cluster_id,
+				tags: input.tags.as_hashable(),
+				resources: input.resources.clone(),
+				lifecycle: input.lifecycle.clone(),
+				image_id: input.image_id,
+				args: input.args.clone(),
+				network_mode: input.network_mode,
+				environment: input.environment.as_hashable(),
+				network_ports: input.network_ports.as_hashable(),
+			})
+			.await?;
 
-	let image_id = new_image_id.unwrap_or(input.image_id);
+			input.image_id
+		}
+		SetupCtx::Reschedule { new_image_id } => {
+			if let Some(image_id) = *new_image_id {
+				ctx.activity(UpdateImageInput {
+					server_id: input.server_id,
+					image_id,
+				})
+				.await?;
+
+				image_id
+			} else {
+				input.image_id
+			}
+		}
+	};
 
 	let server_meta = ctx
 		.activity(GetServerMetaInput {
@@ -316,7 +377,7 @@ async fn setup(
 		})
 		.await?;
 
-	let (actor_id, resources, image_artifact_url) = ctx
+	let (actor_id, resources, artifacts_res) = ctx
 		.join((
 			activity(SelectActorIdInput {
 				server_id: input.server_id,
@@ -326,102 +387,27 @@ async fn setup(
 				resources: input.resources.clone(),
 			}),
 			activity(ResolveArtifactsInput {
-				datacenter_id: input.datacenter_id,
-				image_id,
-				server_id: input.server_id,
 				build_upload_id: server_meta.build_upload_id,
-				build_file_name: server_meta.build_file_name,
+				build_file_name: server_meta.build_file_name.clone(),
 				dc_build_delivery_method: server_meta.dc_build_delivery_method,
 			}),
 		))
 		.await?;
 
-	ctx.signal(pp::Command::StartActor {
+	let actor_setup = ActorSetupCtx {
 		actor_id,
-		config: Box::new(pp::ActorConfig {
-			image: pp::Image {
-				artifact_url: image_artifact_url,
-				kind: match server_meta.build_kind {
-					BuildKind::DockerImage => pp::ImageKind::DockerImage,
-					BuildKind::OciBundle => pp::ImageKind::OciBundle,
-					BuildKind::JavaScript => pp::ImageKind::JavaScript,
-				},
-				compression: match server_meta.build_compression {
-					BuildCompression::None => pp::ImageCompression::None,
-					BuildCompression::Lz4 => pp::ImageCompression::Lz4,
-				},
-			},
-			root_user_enabled: input.root_user_enabled,
-			env: input.environment.as_hashable(),
-			ports: input
-				.network_ports
-				.iter()
-				.map(|(port_label, port)| match port.routing {
-					Routing::GameGuard { protocol, .. } => (
-						crate::util::pegboard_normalize_port_label(port_label),
-						pp::Port {
-							target: port.internal_port,
-							protocol: match protocol {
-								GameGuardProtocol::Http
-								| GameGuardProtocol::Https
-								| GameGuardProtocol::Tcp
-								| GameGuardProtocol::TcpTls => pp::TransportProtocol::Tcp,
-								GameGuardProtocol::Udp => pp::TransportProtocol::Udp,
-							},
-							routing: pp::PortRouting::GameGuard,
-						},
-					),
-					Routing::Host { protocol } => (
-						crate::util::pegboard_normalize_port_label(port_label),
-						pp::Port {
-							target: port.internal_port,
-							protocol: match protocol {
-								HostProtocol::Tcp => pp::TransportProtocol::Tcp,
-								HostProtocol::Udp => pp::TransportProtocol::Udp,
-							},
-							routing: pp::PortRouting::Host,
-						},
-					),
-				})
-				.collect(),
-			network_mode: match input.network_mode {
-				NetworkMode::Bridge => pp::NetworkMode::Bridge,
-				NetworkMode::Host => pp::NetworkMode::Host,
-			},
-			resources,
-			owner: pp::ActorOwner::DynamicServer {
-				server_id: input.server_id,
-			},
-			metadata: util::serde::Raw::new(&pp::ActorMetadata {
-				tags: input.tags.as_hashable(),
-				// Represents when the pegboard actor was created, not the ds workflow.
-				create_ts: ctx.ts(),
-				project: pp::ActorMetadataProject {
-					project_id: server_meta.project_id,
-					slug: server_meta.project_slug,
-				},
-				environment: pp::ActorMetadataEnvironment {
-					env_id: input.env_id,
-					slug: server_meta.env_slug,
-				},
-				datacenter: pp::ActorMetadataDatacenter {
-					name_id: server_meta.dc_name_id,
-					display_name: server_meta.dc_display_name,
-				},
-				cluster: pp::ActorMetadataCluster {
-					cluster_id: input.cluster_id,
-				},
-				build: pp::ActorMetadataBuild {
-					build_id: input.image_id,
-				},
-			})?,
-		}),
-	})
-	.tag("datacenter_id", input.datacenter_id)
-	.send()
-	.await?;
+		server_meta,
+		resources,
+		artifact_url_stub: artifacts_res.artifact_url_stub,
+		fallback_artifact_url: artifacts_res.fallback_artifact_url,
+	};
 
-	Ok(actor_id)
+	// Rescheduling handles spawning the actor manually
+	if let SetupCtx::Init = setup {
+		spawn_actor(ctx, input, &actor_setup).await?;
+	}
+
+	Ok(actor_setup)
 }
 
 #[derive(Debug, Serialize, Deserialize, Hash)]
@@ -496,73 +482,168 @@ async fn select_resources(
 	})
 }
 
-/// Returns the destroy signal if the dynamic server was destroyed.
-async fn wait_actor_ready(ctx: &mut WorkflowCtx, server_id: Uuid) -> GlobalResult<Option<Destroy>> {
-	let _client_id = match ctx.listen::<Init>().await? {
-		Init::ActorStateUpdate(sig) => match sig.state {
-			pp::ActorState::Allocated { client_id } => client_id,
-			pp::ActorState::FailedToAllocate => {
-				ctx.msg(Failed {
-					message: "Failed to allocate (no availability).".into(),
+async fn spawn_actor(
+	ctx: &mut WorkflowCtx,
+	input: &Input,
+	actor_setup: &ActorSetupCtx,
+) -> GlobalResult<()> {
+	ctx.signal(pp::Command::StartActor {
+		actor_id: actor_setup.actor_id,
+		config: Box::new(pp::ActorConfig {
+			image: pp::Image {
+				id: input.image_id,
+				artifact_url_stub: actor_setup.artifact_url_stub.clone(),
+				fallback_artifact_url: actor_setup.fallback_artifact_url.clone(),
+				kind: match actor_setup.server_meta.build_kind {
+					BuildKind::DockerImage => pp::ImageKind::DockerImage,
+					BuildKind::OciBundle => pp::ImageKind::OciBundle,
+					BuildKind::JavaScript => pp::ImageKind::JavaScript,
+				},
+				compression: match actor_setup.server_meta.build_compression {
+					BuildCompression::None => pp::ImageCompression::None,
+					BuildCompression::Lz4 => pp::ImageCompression::Lz4,
+				},
+			},
+			root_user_enabled: input.root_user_enabled,
+			env: input.environment.as_hashable(),
+			ports: input
+				.network_ports
+				.iter()
+				.map(|(port_label, port)| match port.routing {
+					Routing::GameGuard { protocol, .. } => (
+						crate::util::pegboard_normalize_port_label(port_label),
+						pp::Port {
+							target: port.internal_port,
+							protocol: match protocol {
+								GameGuardProtocol::Http
+								| GameGuardProtocol::Https
+								| GameGuardProtocol::Tcp
+								| GameGuardProtocol::TcpTls => pp::TransportProtocol::Tcp,
+								GameGuardProtocol::Udp => pp::TransportProtocol::Udp,
+							},
+							routing: pp::PortRouting::GameGuard,
+						},
+					),
+					Routing::Host { protocol } => (
+						crate::util::pegboard_normalize_port_label(port_label),
+						pp::Port {
+							target: port.internal_port,
+							protocol: match protocol {
+								HostProtocol::Tcp => pp::TransportProtocol::Tcp,
+								HostProtocol::Udp => pp::TransportProtocol::Udp,
+							},
+							routing: pp::PortRouting::Host,
+						},
+					),
 				})
-				.tag("server_id", server_id)
-				.send()
-				.await?;
+				.collect(),
+			network_mode: match input.network_mode {
+				NetworkMode::Bridge => pp::NetworkMode::Bridge,
+				NetworkMode::Host => pp::NetworkMode::Host,
+			},
+			resources: actor_setup.resources.clone(),
+			owner: pp::ActorOwner::DynamicServer {
+				server_id: input.server_id,
+			},
+			metadata: util::serde::Raw::new(&pp::ActorMetadata {
+				actor: pp::ActorMetadataActor {
+					actor_id: actor_setup.actor_id,
+					tags: input.tags.as_hashable(),
+					// Represents when the pegboard actor was created, not the ds workflow.
+					create_ts: ctx.ts(),
+				},
+				project: pp::ActorMetadataProject {
+					project_id: actor_setup.server_meta.project_id,
+					slug: actor_setup.server_meta.project_slug.clone(),
+				},
+				environment: pp::ActorMetadataEnvironment {
+					env_id: input.env_id,
+					slug: actor_setup.server_meta.env_slug.clone(),
+				},
+				datacenter: pp::ActorMetadataDatacenter {
+					name_id: actor_setup.server_meta.dc_name_id.clone(),
+					display_name: actor_setup.server_meta.dc_display_name.clone(),
+				},
+				cluster: pp::ActorMetadataCluster {
+					cluster_id: input.cluster_id,
+				},
+				build: pp::ActorMetadataBuild {
+					build_id: input.image_id,
+				},
+			})?,
+		}),
+	})
+	.tag("datacenter_id", input.datacenter_id)
+	.send()
+	.await?;
 
-				ctx.workflow(destroy::Input {
-					server_id,
-					override_kill_timeout_ms: None,
-					signal_actor: false,
-				})
-				.output()
-				.await?;
-
-				bail!("failed to allocate actor");
-			}
-			state => bail!("unexpected actor state: {state:?}"),
-		},
-		Init::Destroy(sig) => {
-			tracing::debug!("destroying before actor start");
-
-			return Ok(Some(sig));
-		}
-	};
-
-	Ok(None)
+	Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize, Hash)]
 struct ResolveArtifactsInput {
-	datacenter_id: Uuid,
-	image_id: Uuid,
-	server_id: Uuid,
 	build_upload_id: Uuid,
 	build_file_name: String,
 	dc_build_delivery_method: BuildDeliveryMethod,
 }
+
+#[derive(Debug, Serialize, Deserialize, Hash)]
+struct ResolveArtifactsOutput {
+	artifact_url_stub: String,
+	fallback_artifact_url: Option<String>,
+}
+
 #[activity(ResolveArtifacts)]
 async fn resolve_artifacts(
 	ctx: &ActivityCtx,
 	input: &ResolveArtifactsInput,
-) -> GlobalResult<String> {
-	let upload_res = op!([ctx] upload_get {
-		upload_ids: vec![input.build_upload_id.into()],
+) -> GlobalResult<ResolveArtifactsOutput> {
+	let artifact_url_stub = format!(
+		"/s3-cache/{namespace}-bucket-build/{upload_id}/{file_name}",
+		namespace = ctx.config().server()?.rivet.namespace,
+		upload_id = input.build_upload_id,
+		file_name = input.build_file_name,
+	);
+
+	let fallback_artifact_url =
+		if let BuildDeliveryMethod::S3Direct = input.dc_build_delivery_method {
+			tracing::debug!("using s3 direct delivery");
+
+			// Build client
+			let s3_client = s3_util::Client::with_bucket_and_endpoint(
+				ctx.config(),
+				"bucket-build",
+				s3_util::EndpointKind::EdgeInternal,
+			)
+			.await?;
+
+			let presigned_req = s3_client
+				.get_object()
+				.bucket(s3_client.bucket())
+				.key(format!(
+					"{upload_id}/{file_name}",
+					upload_id = input.build_upload_id,
+					file_name = input.build_file_name,
+				))
+				.presigned(
+					s3_util::aws_sdk_s3::presigning::PresigningConfig::builder()
+						.expires_in(std::time::Duration::from_secs(15 * 60))
+						.build()?,
+				)
+				.await?;
+
+			let addr_str = presigned_req.uri().to_string();
+			tracing::debug!(addr = %addr_str, "resolved artifact s3 presigned request");
+
+			Some(addr_str)
+		} else {
+			None
+		};
+
+	Ok(ResolveArtifactsOutput {
+		artifact_url_stub,
+		fallback_artifact_url,
 	})
-	.await?;
-	let upload = unwrap!(upload_res.uploads.first());
-	let upload_id = unwrap_ref!(upload.upload_id).as_uuid();
-
-	let image_artifact_url = resolve_image_artifact_url(
-		ctx,
-		input.datacenter_id,
-		input.build_file_name.clone(),
-		input.dc_build_delivery_method,
-		input.image_id,
-		upload_id,
-	)
-	.await?;
-
-	Ok(image_artifact_url)
 }
 
 #[derive(Debug, Serialize, Deserialize, Hash)]
@@ -605,7 +686,7 @@ async fn update_ports(ctx: &ActivityCtx, input: &UpdatePortsInput) -> GlobalResu
 	for (label, port) in &input.ports {
 		flat_port_labels.push(label.as_str());
 		flat_port_sources.push(port.source as i64);
-		flat_port_ips.push(port.ip.to_string());
+		flat_port_ips.push(port.lan_hostname.clone());
 	}
 
 	sql_execute!(
@@ -630,7 +711,7 @@ async fn update_ports(ctx: &ActivityCtx, input: &UpdatePortsInput) -> GlobalResu
 	// Invalidate cache when ports are updated
 	if !input.ports.is_empty() {
 		ctx.cache()
-			.purge("ds_proxied_ports", [input.datacenter_id])
+			.purge("ds_proxied_ports2", [input.datacenter_id])
 			.await?;
 	}
 
@@ -650,27 +731,57 @@ async fn reschedule_actor(
 	})
 	.await?;
 
-	let res = setup(ctx, &input, false, new_image_id).await;
-	match ctx.catch_unrecoverable(res)? {
-		Ok(_actor_id) => {}
-		Err(err) => {
-			tracing::error!(?err, "unrecoverable reschedule");
+	let actor_setup = setup(ctx, &input, SetupCtx::Reschedule { new_image_id }).await?;
 
-			ctx.workflow(destroy::Input {
-				server_id: input.server_id,
-				override_kill_timeout_ms: None,
-				signal_actor: false,
-			})
-			.output()
-			.await?;
+	// Waits for the actor to be ready (or destroyed) and automatically retries if failed to allocate.
+	ctx.repeat(|ctx| {
+		let input = input.clone();
+		let actor_setup = actor_setup.clone();
 
-			// Throw the original error from the setup activities
-			return Err(err);
+		async move {
+			// Get and increment retry count
+			let retry_count = ctx
+				.activity(UpdateRescheduleRetryInput {
+					server_id: input.server_id,
+				})
+				.await?;
+
+			// Don't sleep for first retry
+			if retry_count > 0 {
+				// Determine next backoff sleep duration
+				let mut backoff = rivet_util::Backoff::new_at(
+					8,
+					None,
+					BASE_RETRY_TIMEOUT_MS,
+					500,
+					(retry_count - 1).try_into()?,
+				);
+				let next = backoff.step().expect("should not have max retry");
+
+				// Sleep for backoff
+				ctx.sleep_until(next).await?;
+			}
+
+			spawn_actor(ctx, &input, &actor_setup).await?;
+
+			match ctx.listen::<Init>().await? {
+				Init::ActorStateUpdate(sig) => match sig.state {
+					pp::ActorState::Allocated {
+						client_id: _client_id,
+					} => return Ok(Loop::Break(None)),
+					pp::ActorState::FailedToAllocate => return Ok(Loop::Continue),
+					state => bail!("unexpected actor state: {state:?}"),
+				},
+				Init::Destroy(sig) => {
+					tracing::debug!("destroying before actor start");
+
+					return Ok(Loop::Break(Some(sig)));
+				}
+			};
 		}
-	};
-
-	// Wait for new actor to be ready
-	wait_actor_ready(ctx, input.server_id).await
+		.boxed()
+	})
+	.await
 }
 
 #[derive(Debug, Serialize, Deserialize, Hash)]
@@ -734,6 +845,111 @@ async fn get_actor_id(ctx: &ActivityCtx, input: &GetActorIdInput) -> GlobalResul
 	.await?;
 
 	Ok(actor_id)
+}
+
+/// Amount of time to wait after all servers have successfully polled to wait to return in order to
+/// avoid a race condition.
+///
+/// This can likely be decreased to < 100 ms safely.
+const TRAEFIK_POLL_COMPLETE_GRACE: Duration = Duration::from_millis(750);
+
+/// Max time to wait for servers to poll their configs.
+const TRAEFIK_POLL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How logn to wait if no GG servers were returned from the list. This is either from:
+/// - Cluster without provisioning configured
+/// - Edge case where all GG servers were destroyed and waiting for new servers to come up
+const TRAFEIK_NO_SERVERS_GRACE: Duration = Duration::from_millis(500);
+
+#[message("ds_traefik_poll")]
+pub struct TraefikPoll {
+	/// Server ID will be `None` if:
+	/// - Not using provisioning (i.e. self-hosted cluster) or
+	/// - Older GG node that's being upgraded
+	pub server_id: Option<Uuid>,
+	pub latest_ds_create_ts: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Hash)]
+struct WaitForTraefikPollInput {
+	create_ts: i64,
+	cluster_id: Uuid,
+	datacenter_id: Uuid,
+}
+
+/// Waits for all of the GG nodes to poll the Traefik config.
+///
+/// This is done by waiting for an event to be published for each of the GG server IDs with a
+/// timestamp for the latest DS it's seen that's > than this DS's create ts.
+#[activity(WaitForTraefikPoll)]
+async fn wait_for_traefik_poll(
+	ctx: &ActivityCtx,
+	input: &WaitForTraefikPollInput,
+) -> GlobalResult<()> {
+	// TODO: This will only work with 1 node on self-hosted. RG 2 will be out by then which fixes
+	// this issue.
+
+	// Start sub first since the messages may arrive while fetching the server list
+	let mut sub = ctx
+		.subscribe::<TraefikPoll>(&json!({ "datacenter_id": input.datacenter_id }))
+		.await?;
+
+	// Fetch servers
+	let servers_res = ctx
+		.op(cluster::ops::server::list::Input {
+			filter: cluster::types::Filter {
+				pool_types: Some(vec![cluster::types::PoolType::Gg]),
+				cluster_ids: Some(vec![input.cluster_id]),
+				..Default::default()
+			},
+			include_destroyed: false,
+			exclude_draining: true,
+			exclude_no_vlan: false,
+		})
+		.await?;
+
+	let mut remaining_servers: HashSet<Uuid> = if servers_res.servers.is_empty() {
+		// HACK: Will wait for a single server poll if we don't have the server list. Wait for a
+		// static amount of time.
+		tokio::time::sleep(TRAFEIK_NO_SERVERS_GRACE).await;
+		return Ok(());
+	} else {
+		servers_res.servers.iter().map(|s| s.server_id).collect()
+	};
+
+	tracing::debug!(servers = ?remaining_servers, after_create_ts = ?input.create_ts, "waiting for traefik servers");
+	let res = tokio::time::timeout(TRAEFIK_POLL_TIMEOUT, async {
+		// Wait for servers to fetch their configs
+		loop {
+			let msg = sub.next().await?;
+
+			if let Some(server_id) = msg.server_id {
+				if msg.latest_ds_create_ts >= input.create_ts {
+					let did_remove = remaining_servers.remove(&server_id);
+
+					tracing::debug!(server_id = ?msg.server_id, latest_ds_create_ts = ?msg.latest_ds_create_ts, servers = ?remaining_servers, "received poll from traefik server");
+
+					// Break loop once all servers have polled
+					if remaining_servers.is_empty() {
+						return GlobalResult::Ok(());
+					}
+				}
+			}
+		}
+	})
+	.await;
+
+	match res {
+		Ok(_) => {
+			tracing::debug!("received poll from all traefik servers, waiting for grace period");
+			tokio::time::sleep(TRAEFIK_POLL_COMPLETE_GRACE).await;
+		}
+		Err(_) => {
+			tracing::warn!(missing_server_ids = ?remaining_servers, "did not receive poll from all gg servers before deadline");
+		}
+	}
+
+	Ok(())
 }
 
 join_signal!(Init {

@@ -1,5 +1,6 @@
 {
   "imports": {
-    "@rivet-gg/actors-core": "jsr:@rivet-gg/actors-core@0.0.1-rc.4"
+    "@rivet-gg/actor": "jsr:@rivet-gg/actor",
+    "@rivet-gg/actor-client": "jsr:@rivet-gg/actor-client"
   }
 }

@@ -913,6 +913,7 @@ dependencies = [
  "async_once",
  "chirp-client",
  "chrono",
+ "cluster",
  "faker-region",
  "futures-util",
  "game-namespace-resolve-name-id",
@@ -5936,19 +5937,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "job-runner"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "portpicker",
- "serde",
- "serde_json",
- "signal-hook",
- "tempfile",
- "uuid",
-]
-
-[[package]]
 name = "jobserver"
 version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8839,6 +8827,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rivet-job-runner"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "portpicker",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "rivet-job-server"
 version = "0.0.1"
 dependencies = [
@@ -9289,6 +9290,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "types-proto",
+ "url",
  "uuid",
 ]
 

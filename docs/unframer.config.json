@@ -1,8 +1,0 @@
-{
-    "$schema": "https://unframer-schema.vercel.app/schema.json",
-    "outDir": "./src/framer",
-    "components": {
-        "main": "https://framer.com/m/Main-Site-38YR.js@5a3LIbvcpcJM2bsSMFTJ"
-    }
-}
-

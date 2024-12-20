@@ -89,6 +89,9 @@ impl Opts {
 			.await
 			.map_err(|err| anyhow!("failed to create project dir: {err}"))?;
 
+		// Change dir so all subsequent tasks operate in this project
+		std::env::set_current_dir(&project_path).context("failed to change dir")?;
+
 		// Generate config
 		let config = match prompt.lang {
 			Language::TypeScript | Language::JavaScript => {
@@ -101,34 +104,52 @@ impl Opts {
 				fs::write(project_path.join(deno_config_name), deno_config).await?;
 
 				// Write script
-				let (script_name, script_body) = match prompt.lang {
-					Language::TypeScript => {
-						("actor.ts", include_str!("../../static/init/js/actor.ts"))
-					}
-					Language::JavaScript => {
-						("actor.js", include_str!("../../static/init/js/actor.js"))
-					}
-					_ => unreachable!(),
-				};
+				let (config_body, readme_body, script_name, script_body, test_name, test_body) =
+					match prompt.lang {
+						Language::TypeScript => (
+							include_str!("../../../../../examples/init-template-ts/rivet.json"),
+							include_str!("../../../../../examples/init-template-ts/README.md"),
+							"counter.ts",
+							include_str!("../../../../../examples/init-template-ts/counter.ts"),
+							"counter_test.ts",
+							include_str!(
+								"../../../../../examples/init-template-ts/counter_test.ts"
+							),
+						),
+						Language::JavaScript => (
+							include_str!("../../../../../examples/init-template-js/rivet.json"),
+							include_str!("../../../../../examples/init-template-js/README.md"),
+							"counter.js",
+							include_str!("../../../../../examples/init-template-js/counter.js"),
+							"counter_test.js",
+							include_str!(
+								"../../../../../examples/init-template-js/counter_test.js"
+							),
+						),
+						_ => unreachable!(),
+					};
 				fs::write(project_path.join(script_name), script_body).await?;
+				fs::write(project_path.join(test_name), test_body).await?;
 
-				// Generate config
-				let config = include_str!("../../static/init/js/rivet.json")
-					.replace("__NAME__", &prompt.project_name)
-					.replace("__SCRIPT__", &script_name);
+				let readme_body = readme_body.replace("__NAME__", &prompt.project_name);
+				fs::write(project_path.join("README.md"), readme_body).await?;
 
-				config
+				config_body.to_string()
 			}
 			Language::Docker => {
-				// Write Dockerfile
-				let dockerfile_body = include_str!("../../static/init/docker/Dockerfile");
+				let readme_body =
+					include_str!("../../../../../examples/init-template-docker/README.md");
+				let readme_body = readme_body.replace("__NAME__", &prompt.project_name);
+				fs::write(project_path.join("README.md"), readme_body).await?;
+
+				let dockerfile_body =
+					include_str!("../../../../../examples/init-template-docker/Dockerfile");
 				fs::write(project_path.join("Dockerfile"), dockerfile_body).await?;
 
-				// Generate config
-				let config = include_str!("../../static/init/docker/rivet.json")
-					.replace("__NAME__", &prompt.project_name);
+				let config_body =
+					include_str!("../../../../../examples/init-template-docker/rivet.json");
 
-				config
+				config_body.to_string()
 			}
 		};
 
@@ -144,7 +165,7 @@ impl Opts {
 		// Login to Rivet
 		if prompt.login {
 			println!();
-			println!("Loggin in to Rivet...");
+			println!("Login in to Rivet...");
 			crate::util::login::login(prompt.api_endpoint.clone()).await?;
 		}
 
@@ -152,17 +173,20 @@ impl Opts {
 		println!();
 		println!("    ==========   Welcome to Rivet!   ==========");
 		println!();
+		println!("Resources:");
+		println!();
+		println!("  Documentation:      https://rivet.gg/docs");
+		//println!("  Examples:         https://rivet.gg/docs/examples");
+		println!("  Discord:            https://rivet.gg/discord");
+		println!("  Issues:             https://github.com/rivet-gg/rivet/issues");
+		println!("  Questions & Ideas:  https://github.com/orgs/rivet-gg/discussions");
+		println!("  Configure IDE:      https://docs.deno.com/runtime/getting_started/setup_your_environment");
+		//println!("  Enterprise:       https://rivet.gg/sales");
+		println!();
 		println!("Next steps:");
 		println!();
 		println!("  $ cd {}", prompt.project_name);
 		println!("  $ rivet deploy");
-		println!();
-		println!("Resources:");
-		println!();
-		println!("  Quickstart:      https://rivet.gg/docs/quickstart");
-		println!("  Examples:        https://rivet.gg/docs/examples");
-		println!("  Discord:         https://rivet.gg/discord");
-		println!("  Enterprise:      https://rivet.gg/sales");
 		println!();
 
 		crate::util::telemetry::capture_event(
