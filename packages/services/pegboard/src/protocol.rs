@@ -1,5 +1,3 @@
-use std::net::Ipv4Addr;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::FromRepr;
@@ -99,7 +97,11 @@ pub struct ActorConfig {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Hash)]
 pub struct Image {
-	pub artifact_url: String,
+	pub id: Uuid,
+	/// Appended to the ATS url to fetch the image.
+	pub artifact_url_stub: String,
+	/// Direct S3 url to download the image from without ATS.
+	pub fallback_artifact_url: Option<String>,
 	pub kind: ImageKind,
 	pub compression: ImageCompression,
 }
@@ -193,13 +195,19 @@ impl ActorOwner {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Hash)]
 pub struct ActorMetadata {
-	pub tags: HashableMap<String, String>,
-	pub create_ts: i64,
+	pub actor: ActorMetadataActor,
 	pub project: ActorMetadataProject,
 	pub environment: ActorMetadataEnvironment,
 	pub datacenter: ActorMetadataDatacenter,
 	pub cluster: ActorMetadataCluster,
 	pub build: ActorMetadataBuild,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Hash)]
+pub struct ActorMetadataActor {
+	pub actor_id: Uuid,
+	pub tags: HashableMap<String, String>,
+	pub create_ts: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Hash)]
@@ -283,8 +291,8 @@ pub struct ProxiedPort {
 	pub source: u16,
 	/// Port in the container.
 	pub target: u16,
-	/// Vlan IP of the node running the container.
-	pub ip: Ipv4Addr,
+	/// LAN hostname of the node running the container.
+	pub lan_hostname: String,
 	pub protocol: TransportProtocol,
 }
 

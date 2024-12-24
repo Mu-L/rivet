@@ -17,7 +17,7 @@ pub struct Cluster {
 	pub create_ts: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Datacenter {
 	pub datacenter_id: Uuid,
 	pub cluster_id: Uuid,
@@ -30,6 +30,7 @@ pub struct Datacenter {
 	pub build_delivery_method: BuildDeliveryMethod,
 	pub prebakes_enabled: bool,
 	pub create_ts: i64,
+	pub guard_public_hostname: GuardPublicHostname,
 }
 
 #[derive(Serialize, Deserialize, Hash, Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
@@ -37,14 +38,6 @@ pub enum Provider {
 	/// Servers are manually provisioned and connected.
 	Manual = 1,
 	Linode = 0,
-}
-
-impl From<rivet_config::config::rivet::dc_provision::Provider> for Provider {
-	fn from(value: rivet_config::config::rivet::dc_provision::Provider) -> Provider {
-		match value {
-			rivet_config::config::rivet::dc_provision::Provider::Linode => Provider::Linode,
-		}
-	}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
@@ -105,32 +98,9 @@ impl std::fmt::Display for PoolType {
 	}
 }
 
-impl From<rivet_config::config::rivet::dc_provision::PoolType> for PoolType {
-	fn from(value: rivet_config::config::rivet::dc_provision::PoolType) -> PoolType {
-		match value {
-			rivet_config::config::rivet::dc_provision::PoolType::Job => PoolType::Job,
-			rivet_config::config::rivet::dc_provision::PoolType::Gg => PoolType::Gg,
-			rivet_config::config::rivet::dc_provision::PoolType::Ats => PoolType::Ats,
-			rivet_config::config::rivet::dc_provision::PoolType::Pegboard => PoolType::Pegboard,
-			rivet_config::config::rivet::dc_provision::PoolType::PegboardIsolate => {
-				PoolType::PegboardIsolate
-			}
-			rivet_config::config::rivet::dc_provision::PoolType::Fdb => PoolType::Fdb,
-		}
-	}
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub struct Hardware {
 	pub provider_hardware: String,
-}
-
-impl From<rivet_config::config::rivet::dc_provision::Hardware> for Hardware {
-	fn from(value: rivet_config::config::rivet::dc_provision::Hardware) -> Hardware {
-		Hardware {
-			provider_hardware: value.name,
-		}
-	}
 }
 
 #[derive(Debug, Serialize, Deserialize, Hash)]
@@ -170,8 +140,8 @@ pub struct Server {
 	pub datacenter_id: Uuid,
 	pub pool_type: PoolType,
 	pub provider_server_id: Option<String>,
-	pub vlan_ip: Option<IpAddr>,
-	pub public_ip: Option<IpAddr>,
+	pub lan_ip: Option<IpAddr>,
+	pub wan_ip: Option<IpAddr>,
 	pub cloud_destroy_ts: Option<i64>,
 }
 
@@ -189,4 +159,46 @@ pub enum TlsState {
 	Creating = 0,
 	Active = 1,
 	Renewing = 2,
+}
+
+/// See `rivet_config::config::server::rivet::GuardPublicHostname` for docs.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Hash)]
+pub enum GuardPublicHostname {
+	DnsParent(String),
+	Static(String),
+}
+
+impl GuardPublicHostname {
+	pub fn from_columns(
+		config: &rivet_config::Config,
+		datacenter_id: Uuid,
+		gph_dns_parent: Option<String>,
+		gph_static: Option<String>,
+	) -> GlobalResult<GuardPublicHostname> {
+		let gph = match (gph_dns_parent, gph_static) {
+			(Some(x), None) => GuardPublicHostname::DnsParent(x),
+			(None, Some(x)) => GuardPublicHostname::Static(x),
+			(Some(_), Some(_)) => bail!(
+				"guard public hostname dns parent & static cannot be defined at the same time"
+			),
+			(None, None) => {
+				if let Ok(domain_job) = config.server()?.rivet.domain_job() {
+					// Fall back to auto-generated hostname
+					let hostname = format!("{}.{domain_job}", datacenter_id);
+					crate::types::GuardPublicHostname::DnsParent(hostname)
+				} else {
+					bail!("no guard public hostname specified in dc {datacenter_id}")
+				}
+			}
+		};
+
+		Ok(gph)
+	}
+
+	pub fn into_columns(self) -> (Option<String>, Option<String>) {
+		match self {
+			GuardPublicHostname::DnsParent(x) => (Some(x), None),
+			GuardPublicHostname::Static(x) => (None, Some(x)),
+		}
+	}
 }

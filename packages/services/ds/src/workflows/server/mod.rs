@@ -1,9 +1,4 @@
-use std::{
-	collections::HashMap,
-	hash::{DefaultHasher, Hasher},
-	net::IpAddr,
-	time::Duration,
-};
+use std::{collections::HashMap, time::Duration};
 
 use build::types::{BuildCompression, BuildKind};
 use chirp_workflow::prelude::*;
@@ -23,8 +18,10 @@ pub mod pegboard;
 // In ms, a small amount of time to separate the completion of the drain to the deletion of the
 // cluster server. We want the drain to complete first.
 const DRAIN_PADDING_MS: i64 = 10000;
+/// Time to delay an actor from rescheduling after a rescheduling failure.
+const BASE_RETRY_TIMEOUT_MS: usize = 2000;
 
-// TODO: Restructure traefik to get rid of this
+// Only used by Nomad
 const TRAEFIK_GRACE_PERIOD: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -81,6 +78,12 @@ pub async fn ds_server(ctx: &mut WorkflowCtx, input: &Input) -> GlobalResult<()>
 		return Ok(());
 	}
 
+	let network_ports = ctx
+		.activity(DisableTlsPortsInput {
+			network_ports: input.network_ports.as_hashable(),
+		})
+		.await?;
+
 	match input.runtime {
 		ServerRuntime::Nomad => {
 			ctx.workflow(nomad::Input {
@@ -96,7 +99,7 @@ pub async fn ds_server(ctx: &mut WorkflowCtx, input: &Input) -> GlobalResult<()>
 				args: input.args.clone(),
 				network_mode: input.network_mode,
 				environment: input.environment.clone(),
-				network_ports: input.network_ports.clone(),
+				network_ports: network_ports.into_iter().collect(),
 			})
 			.output()
 			.await
@@ -115,11 +118,62 @@ pub async fn ds_server(ctx: &mut WorkflowCtx, input: &Input) -> GlobalResult<()>
 				args: input.args.clone(),
 				network_mode: input.network_mode,
 				environment: input.environment.clone(),
-				network_ports: input.network_ports.clone(),
+				network_ports: network_ports.into_iter().collect(),
 			})
 			.output()
 			.await
 		}
+	}
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+struct DisableTlsPortsInput {
+	network_ports: util::serde::HashableMap<String, Port>,
+}
+
+/// If TLS is not enabled in the cluster, we downgrade all protocols to the non-TLS equivalents.
+/// This allows developers to develop locally with the same code they would use in production.
+#[activity(DisableTlsPorts)]
+async fn disable_tls_ports(
+	ctx: &ActivityCtx,
+	input: &DisableTlsPortsInput,
+) -> GlobalResult<util::serde::HashableMap<String, Port>> {
+	if ctx.config().server()?.rivet.guard.tls_enabled() {
+		// Do nothing
+		Ok(input.network_ports.clone())
+	} else {
+		// Downgrade all TLS protocols to non-TLS protocols
+		let network_ports = input
+			.network_ports
+			.clone()
+			.into_iter()
+			.map(|(k, p)| {
+				(
+					k,
+					Port {
+						internal_port: p.internal_port,
+						routing: match p.routing {
+							Routing::GameGuard {
+								protocol,
+								authorization,
+							} => Routing::GameGuard {
+								protocol: match protocol {
+									GameGuardProtocol::Https => GameGuardProtocol::Http,
+									GameGuardProtocol::TcpTls => GameGuardProtocol::Tcp,
+									x @ (GameGuardProtocol::Http
+									| GameGuardProtocol::Tcp
+									| GameGuardProtocol::Udp) => x,
+								},
+								authorization,
+							},
+							x @ Routing::Host { .. } => x,
+						},
+					},
+				)
+			})
+			.collect();
+
+		Ok(network_ports)
 	}
 }
 
@@ -237,18 +291,18 @@ async fn validate(ctx: &ActivityCtx, input: &ValidateInput) -> GlobalResult<Opti
 		));
 	}
 
-	if input.tags.len() > 64 {
-		return Ok(Some("Too many tags (max 64).".into()));
+	if input.tags.len() > 8 {
+		return Ok(Some("Too many tags (max 8).".into()));
 	}
 
 	for (k, v) in &input.tags {
 		if k.is_empty() {
 			return Ok(Some("tags[]: Tag label cannot be empty.".into()));
 		}
-		if k.len() > 256 {
+		if k.len() > 16 {
 			return Ok(Some(format!(
-				"tags[{:?}]: Tag label too large (max 256 bytes).",
-				&k[..256]
+				"tags[{:?}]: Tag label too large (max 16 bytes).",
+				util::safe_slice(k, 0, 16),
 			)));
 		}
 		if v.is_empty() {
@@ -281,7 +335,7 @@ async fn validate(ctx: &ActivityCtx, input: &ValidateInput) -> GlobalResult<Opti
 		if k.len() > 256 {
 			return Ok(Some(format!(
 				"runtime.environment[{:?}]: Key too large (max 256 bytes).",
-				&k[..256]
+				util::safe_slice(k, 0, 256),
 			)));
 		}
 		if v.len() > 1024 {
@@ -291,15 +345,15 @@ async fn validate(ctx: &ActivityCtx, input: &ValidateInput) -> GlobalResult<Opti
 		}
 	}
 
-	if input.network_ports.len() > 64 {
-		return Ok(Some("Too many ports (max 64).".into()));
+	if input.network_ports.len() > 8 {
+		return Ok(Some("Too many ports (max 8).".into()));
 	}
 
 	for (name, port) in &input.network_ports {
-		if name.len() > 256 {
+		if name.len() > 16 {
 			return Ok(Some(format!(
-				"runtime.ports[{:?}]: Port name too large (max 256 bytes).",
-				&name[..256]
+				"runtime.ports[{:?}]: Port name too large (max 16 bytes).",
+				util::safe_slice(name, 0, 16),
 			)));
 		}
 
@@ -529,7 +583,7 @@ async fn insert_db(ctx: &ActivityCtx, input: &InsertDbInput) -> GlobalResult<()>
 	// workflow step
 	// Invalidate cache when new server is created
 	ctx.cache()
-		.purge("ds_proxied_ports", [input.datacenter_id])
+		.purge("ds_proxied_ports2", [input.datacenter_id])
 		.await?;
 
 	Ok(())
@@ -542,7 +596,7 @@ struct GetServerMetaInput {
 	image_id: Uuid,
 }
 
-#[derive(Debug, Serialize, Deserialize, Hash)]
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 struct GetServerMetaOutput {
 	project_id: Uuid,
 	project_slug: String,
@@ -582,7 +636,8 @@ async fn get_server_meta(
 	let project_id = unwrap!(env.game_id).as_uuid();
 	let projects_res = op!([ctx] game_get {
 		game_ids: vec![project_id.into()],
-	}).await?;
+	})
+	.await?;
 	let project = unwrap!(projects_res.games.first());
 
 	Ok(GetServerMetaOutput {
@@ -646,6 +701,42 @@ async fn update_image(ctx: &ActivityCtx, input: &UpdateImageInput) -> GlobalResu
 	Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize, Hash)]
+struct UpdateRescheduleRetryInput {
+	server_id: Uuid,
+}
+
+#[activity(UpdateRescheduleRetry)]
+async fn update_reschedule_retry(
+	ctx: &ActivityCtx,
+	input: &UpdateRescheduleRetryInput,
+) -> GlobalResult<i64> {
+	let (retry_count,) = sql_fetch_one!(
+		[ctx, (i64,)]
+		"
+		UPDATE db_ds.servers
+		SET
+			-- If the last retry ts is more than 2 * backoff ago, reset retry count to 0
+			reschedule_retry_count = CASE
+				-- Should match algorithm in backoff
+				WHEN last_reschedule_retry_ts < $2 - (2 * $3 * (2 ^ LEAST(reschedule_retry_count, $4)))
+				THEN 0
+				ELSE reschedule_retry_count + 1
+			END,
+			last_reschedule_retry_ts = $2
+		WHERE server_id = $1
+		RETURNING reschedule_retry_count
+		",
+		input.server_id,
+		util::timestamp::now(),
+		BASE_RETRY_TIMEOUT_MS as i64,
+		8, // max_exponent
+	)
+	.await?;
+
+	Ok(retry_count)
+}
+
 #[message("ds_server_create_complete")]
 pub struct CreateComplete {}
 
@@ -693,98 +784,6 @@ join_signal!(DrainState {
 	Destroy,
 });
 
-/// Generates a presigned URL for the build image.
-async fn resolve_image_artifact_url(
-	ctx: &ActivityCtx,
-	datacenter_id: Uuid,
-	build_file_name: String,
-	build_delivery_method: BuildDeliveryMethod,
-	build_id: Uuid,
-	upload_id: Uuid,
-) -> GlobalResult<String> {
-	// Build URL
-	match build_delivery_method {
-		BuildDeliveryMethod::S3Direct => {
-			tracing::debug!("using s3 direct delivery");
-
-			// Build client
-			let s3_client = s3_util::Client::with_bucket_and_endpoint(
-				ctx.config(),
-				"bucket-build",
-				s3_util::EndpointKind::EdgeInternal,
-			)
-			.await?;
-
-			let presigned_req = s3_client
-				.get_object()
-				.bucket(s3_client.bucket())
-				.key(format!("{upload_id}/{build_file_name}"))
-				.presigned(
-					s3_util::aws_sdk_s3::presigning::PresigningConfig::builder()
-						.expires_in(std::time::Duration::from_secs(15 * 60))
-						.build()?,
-				)
-				.await?;
-
-			let addr_str = presigned_req.uri().to_string();
-			tracing::debug!(addr = %addr_str, "resolved artifact s3 presigned request");
-
-			Ok(addr_str)
-		}
-		BuildDeliveryMethod::TrafficServer => {
-			tracing::debug!("using traffic server delivery");
-
-			// Hash build so that the ATS server that we download the build from is always the same one. This
-			// improves cache hit rates and reduces download times.
-			let mut hasher = DefaultHasher::new();
-			hasher.write(build_id.as_bytes());
-			let hash = hasher.finish() as i64;
-
-			// NOTE: The algorithm for choosing the vlan_ip from the hash should match the one in
-			// prewarm_ats.rs @ prewarm_ats_cache
-			// Get vlan ip from build id hash for consistent routing
-			let (ats_vlan_ip,) = sql_fetch_one!(
-				[ctx, (IpAddr,)]
-				"
-				WITH sel AS (
-					-- Select candidate vlan ips
-					SELECT
-						vlan_ip
-					FROM db_cluster.servers
-					WHERE
-						datacenter_id = $1 AND
-						pool_type = $2 AND
-						vlan_ip IS NOT NULL AND
-						install_complete_ts IS NOT NULL AND
-						drain_ts IS NULL AND
-						cloud_destroy_ts IS NULL
-				)
-				SELECT vlan_ip
-				FROM sel
-				-- Use mod to make sure the hash stays within bounds
-				OFFSET abs($3 % GREATEST((SELECT COUNT(*) FROM sel), 1))
-				LIMIT 1
-				",
-				&datacenter_id,
-				cluster::types::PoolType::Ats as i32,
-				hash,
-			)
-			.await?;
-
-			let addr = format!(
-				"http://{vlan_ip}:8080/s3-cache/{namespace}-bucket-build/{upload_id}/{build_file_name}",
-				vlan_ip = ats_vlan_ip,
-				namespace = ctx.config().server()?.rivet.namespace,
-				upload_id = upload_id,
-			);
-
-			tracing::debug!(%addr, "resolved artifact s3 url");
-
-			Ok(addr)
-		}
-	}
-}
-
 /// Choose which port to assign for a job's ingress port.
 /// This is required because TCP and UDP do not have a `Host` header and thus cannot be re-routed by hostname.
 ///
@@ -797,8 +796,8 @@ async fn choose_ingress_port(ctx: &ActivityCtx, protocol: GameGuardProtocol) -> 
 	let gg_config = &ctx.config().server()?.rivet.guard;
 
 	match protocol {
-		GameGuardProtocol::Http => Ok(80),
-		GameGuardProtocol::Https => Ok(443),
+		GameGuardProtocol::Http => Ok(gg_config.http_port()),
+		GameGuardProtocol::Https => Ok(gg_config.https_port()),
 		GameGuardProtocol::Tcp | GameGuardProtocol::TcpTls => {
 			bind_with_retries(
 				ctx,

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use global_error::prelude::*;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use url::Url;
-use schemars::JsonSchema;
 
 use crate::secret::Secret;
 
@@ -414,6 +414,8 @@ pub struct ClickHouse {
 	pub password: Option<Secret<String>>,
 	#[serde(default)]
 	pub provision_users: HashMap<String, ClickHouseUser>,
+	#[serde(default)]
+	pub secure: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]

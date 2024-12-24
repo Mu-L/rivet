@@ -5,6 +5,23 @@ server:
 
     ui:
       public_origin_regex: .*
+
+    guard:
+      # TLS not configured for local development
+      tls_enabled: false
+      # Corresponds to the ports configured in the `docker-compose.yml`
+      http_port: 7080
+      https_port: 7443
+      min_ingress_port_tcp: 7500
+      max_ingress_port_tcp: 7599
+      min_ingress_port_udp: 7500
+      max_ingress_port_udp: 7599
+
+    # Enable status checks if testing status check project
+    status:
+      token: local
+      system_test_isolate_project: default
+      system_test_isolate_environment: default
   cockroachdb:
     url: postgresql://cockroachdb:26257/defaultdb?sslmode=disable
     username: root

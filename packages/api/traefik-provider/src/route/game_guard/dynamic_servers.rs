@@ -1,13 +1,16 @@
+use api_helper::ctx::Ctx;
+use cluster::types::GuardPublicHostname;
+use ds::{
+	types::EndpointType,
+	types::{GameGuardProtocol, PortAuthorization, PortAuthorizationType},
+};
+use rivet_operation::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::{
 	collections::hash_map::DefaultHasher,
 	fmt::Write,
 	hash::{Hash, Hasher},
 };
-
-use api_helper::ctx::Ctx;
-use ds::types::{GameGuardProtocol, PortAuthorization, PortAuthorizationType};
-use rivet_operation::prelude::*;
-use serde::{Deserialize, Serialize};
 
 use crate::{auth::Auth, types};
 
@@ -15,6 +18,9 @@ use crate::{auth::Auth, types};
 struct DynamicServerProxiedPort {
 	server_id: Uuid,
 	datacenter_id: Uuid,
+	create_ts: i64,
+	guard_public_hostname_dns_parent: Option<String>,
+	guard_public_hostname_static: Option<String>,
 
 	label: String,
 	ip: String,
@@ -32,18 +38,22 @@ struct DynamicServerProxiedPort {
 pub async fn build_ds(
 	ctx: &Ctx<Auth>,
 	dc_id: Uuid,
+	server_id: Option<Uuid>,
 	config: &mut types::TraefikConfigResponse,
-) -> GlobalResult<()> {
+) -> GlobalResult<Option<i64>> {
 	let proxied_ports = ctx
 		.cache()
 		.ttl(60_000)
-		.fetch_one_json("ds_proxied_ports", dc_id, |mut cache, dc_id| async move {
+		.fetch_one_json("ds_proxied_ports2", dc_id, |mut cache, dc_id| async move {
 			let rows = sql_fetch_all!(
 				[ctx, DynamicServerProxiedPort]
 				"
 				SELECT
 					s.server_id,
 					s.datacenter_id,
+					s.create_ts,
+					dc.guard_public_hostname_dns_parent,
+					dc.guard_public_hostname_static,
 					pp.label,
 					pp.ip,
 					pp.source,
@@ -56,10 +66,12 @@ pub async fn build_ds(
 				FROM db_ds.server_proxied_ports AS pp
 				JOIN db_ds.servers AS s
 				ON pp.server_id = s.server_id
+				JOIN db_cluster.datacenters AS dc
+				ON s.datacenter_id = dc.datacenter_id
 				JOIN db_ds.server_ports_gg AS gg
 				ON
 					pp.server_id = gg.server_id AND
-					pp.label = CONCAT('ds_', REPLACE(gg.port_name, '-', '_'))
+					pp.label = gg.port_name
 				LEFT JOIN db_ds.server_ports_gg_auth AS gga
 				ON
 					gg.server_id = gga.server_id AND
@@ -77,6 +89,8 @@ pub async fn build_ds(
 		})
 		.await?
 		.unwrap_or_default();
+
+	let latest_ds_create_ts = proxied_ports.iter().map(|pp| pp.create_ts).max();
 
 	config.http.middlewares.insert(
 		"ds-rate-limit".to_owned(),
@@ -102,6 +116,15 @@ pub async fn build_ds(
 		},
 	);
 
+	// TODO(RVT-4349, RVT-4172): Retry requests in case the actor's server has not started yet
+	config.http.middlewares.insert(
+		"ds-retry".to_owned(),
+		types::TraefikMiddlewareHttp::Retry {
+			attempts: 4,
+			initial_interval: "250ms".into(),
+		},
+	);
+
 	// Process proxied ports
 	for proxied_port in &proxied_ports {
 		if let Err(err) = ds_register_proxied_port(ctx.config(), proxied_port, config) {
@@ -122,7 +145,7 @@ pub async fn build_ds(
 		"dynamic servers traefik config"
 	);
 
-	Ok(())
+	Ok(latest_ds_create_ts)
 }
 
 #[tracing::instrument(skip(config))]
@@ -138,6 +161,12 @@ fn ds_register_proxied_port(
 	let proxy_protocol = unwrap!(GameGuardProtocol::from_repr(
 		proxied_port.protocol.try_into()?
 	));
+	let guard_public_hostname = GuardPublicHostname::from_columns(
+		config,
+		proxied_port.datacenter_id,
+		proxied_port.guard_public_hostname_dns_parent.clone(),
+		proxied_port.guard_public_hostname_static.clone(),
+	)?;
 
 	// Insert the relevant service
 	match proxy_protocol {
@@ -191,53 +220,24 @@ fn ds_register_proxied_port(
 	// Insert the relevant router
 	match proxy_protocol {
 		GameGuardProtocol::Http => {
-			// Generate config
-			let middlewares = http_router_middlewares();
-			let rule = format_http_rule(config, proxied_port)?;
-
-			// Hash key
-			let unique_key = (&server_id, &target_port_label, &rule, &middlewares);
-			let mut hasher = DefaultHasher::new();
-			unique_key.hash(&mut hasher);
-			let hash = hasher.finish();
-
-			traefik_config.http.routers.insert(
-				format!("ds:{server_id}:{hash:x}:http"),
-				types::TraefikRouter {
-					entry_points: vec![format!("lb-{ingress_port}")],
-					rule: Some(rule),
-					priority: None,
-					service: service_id.clone(),
-					middlewares,
-					tls: None,
-				},
-			);
+			add_http_port(
+				config,
+				proxied_port,
+				traefik_config,
+				&service_id,
+				&guard_public_hostname,
+				false,
+			)?;
 		}
 		GameGuardProtocol::Https => {
-			// Generate config
-			let middlewares = http_router_middlewares();
-			let rule = format_http_rule(config, proxied_port)?;
-
-			// Hash key
-			let unique_key = (&server_id, &target_port_label, &rule, &middlewares);
-			let mut hasher = DefaultHasher::new();
-			unique_key.hash(&mut hasher);
-			let hash = hasher.finish();
-
-			traefik_config.http.routers.insert(
-				format!("ds:{server_id}:{hash:x}:https"),
-				types::TraefikRouter {
-					entry_points: vec![format!("lb-{ingress_port}")],
-					rule: Some(rule),
-					priority: None,
-					service: service_id.clone(),
-					middlewares,
-					tls: Some(types::TraefikTls::build(build_tls_domains(
-						config,
-						proxied_port,
-					)?)),
-				},
-			);
+			add_http_port(
+				config,
+				proxied_port,
+				traefik_config,
+				&service_id,
+				&guard_public_hostname,
+				true,
+			)?;
 		}
 		GameGuardProtocol::Tcp => {
 			traefik_config.tcp.routers.insert(
@@ -262,8 +262,7 @@ fn ds_register_proxied_port(
 					service: service_id,
 					middlewares: vec![],
 					tls: Some(types::TraefikTls::build(build_tls_domains(
-						config,
-						proxied_port,
+						&guard_public_hostname,
 					)?)),
 				},
 			);
@@ -286,9 +285,95 @@ fn ds_register_proxied_port(
 	Ok(())
 }
 
-fn format_http_rule(
+fn add_http_port(
 	config: &rivet_config::Config,
 	proxied_port: &DynamicServerProxiedPort,
+	traefik_config: &mut types::TraefikConfigResponse,
+	service_id: &str,
+	guard_public_hostname: &GuardPublicHostname,
+	is_https: bool,
+) -> GlobalResult<()> {
+	// Choose endpoint types to expose routes for
+	let supported_endpoint_types = match guard_public_hostname {
+		GuardPublicHostname::DnsParent(_) => vec![EndpointType::Hostname, EndpointType::Path],
+		GuardPublicHostname::Static(_) => vec![EndpointType::Path],
+	};
+
+	// Add routes for each endpoint type
+	for endpoint_type in supported_endpoint_types {
+		let (hostname, path) = ds::util::build_ds_hostname_and_path(
+			proxied_port.server_id,
+			&proxied_port.port_name,
+			proxied_port.datacenter_id,
+			if is_https {
+				GameGuardProtocol::Https
+			} else {
+				GameGuardProtocol::Http
+			},
+			endpoint_type,
+			guard_public_hostname,
+		)?;
+
+		let mut middlewares = vec![
+			"ds-rate-limit".to_string(),
+			"ds-in-flight".to_string(),
+			"ds-retry".to_string(),
+		];
+		let rule = format_http_rule(
+			proxied_port,
+			&hostname,
+			proxied_port.gg_port,
+			path.as_deref(),
+		)?;
+
+		// Create unique hash to prevent collision with other ports
+		let unique_key = (&proxied_port.server_id, &proxied_port.label, &rule);
+		let mut hasher = DefaultHasher::new();
+		unique_key.hash(&mut hasher);
+		let hash = hasher.finish();
+
+		// Strip path
+		if let Some(path) = path {
+			let mw_name = format!("ds:{}:{hash:x}:strip-path", proxied_port.server_id);
+			traefik_config.http.middlewares.insert(
+				mw_name.clone(),
+				types::TraefikMiddlewareHttp::StripPrefix {
+					prefixes: vec![path],
+				},
+			);
+			middlewares.push(mw_name);
+		}
+
+		// Build router
+		let proto = if is_https { "https" } else { "http" };
+
+		traefik_config.http.routers.insert(
+			format!("ds:{}:{hash:x}:{proto}", proxied_port.server_id),
+			types::TraefikRouter {
+				entry_points: vec![format!("lb-{}", proxied_port.gg_port)],
+				rule: Some(rule),
+				priority: None,
+				service: service_id.to_string(),
+				middlewares,
+				tls: if is_https {
+					Some(types::TraefikTls::build(build_tls_domains(
+						&guard_public_hostname,
+					)?))
+				} else {
+					None
+				},
+			},
+		);
+	}
+
+	Ok(())
+}
+
+fn format_http_rule(
+	proxied_port: &DynamicServerProxiedPort,
+	hostname: &str,
+	port: i64,
+	path: Option<&str>,
 ) -> GlobalResult<String> {
 	let authorization = {
 		let authorization_type = if let Some(auth_type) = proxied_port.auth_type {
@@ -311,13 +396,18 @@ fn format_http_rule(
 
 	let mut rule = "(".to_string();
 
-	let hostname = ds::util::build_ds_hostname(
-		config,
-		proxied_port.server_id,
-		&proxied_port.port_name,
-		proxied_port.datacenter_id,
-	)?;
-	write!(&mut rule, "Host(`{}`)", hostname)?;
+	match (hostname, path) {
+		(hostname, Some(path)) => {
+			// Matches both the host without the port (i.e. default port like
+			// port 80 or 443) and host with the port.
+			//
+			// Matches both the path without trailing slash (e.g. `/foo`) and subpaths (e.g. `/foo/bar`), but not `/foobar`.
+			write!(&mut rule, "(Host(`{hostname}`) || Host(`{hostname}:{port}`)) && (Path(`{path}`) || PathPrefix(`{path}/`))")?;
+		}
+		(hostname, None) => {
+			write!(&mut rule, "Host(`{hostname}`)")?;
+		}
+	}
 
 	match authorization {
 		PortAuthorization::None => {}
@@ -344,28 +434,26 @@ fn format_http_rule(
 }
 
 fn build_tls_domains(
-	config: &rivet_config::Config,
-	proxied_port: &DynamicServerProxiedPort,
+	guard_public_hostname: &GuardPublicHostname,
 ) -> GlobalResult<Vec<types::TraefikTlsDomain>> {
+	let (main, sans) = match guard_public_hostname {
+		GuardPublicHostname::DnsParent(parent) => (parent.clone(), vec![format!("*.{parent}")]),
+		// This will only work if there is an SSL cert provided for the exact name of the static
+		// DNS address.
+		//
+		// This will not work if passing an IP address.
+		GuardPublicHostname::Static(static_) => (static_.clone(), vec![static_.clone()]),
+	};
+
 	// Derive TLS config. Jobs can specify their own ingress rules, so we
 	// need to derive which domains to use for the job.
 	//
 	// A parent wildcard SSL mode will use the parent domain as the SSL
 	// name.
 	let mut domains = Vec::new();
-	let parent_host = ds::util::build_ds_host(config, proxied_port.datacenter_id)?;
-	domains.push(types::TraefikTlsDomain {
-		main: parent_host.to_owned(),
-		sans: vec![format!("*.{}", parent_host)],
-	});
+	domains.push(types::TraefikTlsDomain { main, sans });
 
 	Ok(domains)
-}
-
-fn http_router_middlewares() -> Vec<String> {
-	let middlewares = vec!["ds-rate-limit".to_string(), "ds-in-flight".to_string()];
-
-	middlewares
 }
 
 fn escape_input(input: &str) -> String {
