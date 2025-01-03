@@ -4,15 +4,15 @@
 
 import * as environments from "../../../../../../environments";
 import * as core from "../../../../../../core";
-import * as RivetClient from "../../../../../index";
+import * as Rivet from "../../../../../index";
 import urlJoin from "url-join";
 import * as serializers from "../../../../../../serialization/index";
 import * as errors from "../../../../../../errors/index";
 
 export declare namespace Regions {
     interface Options {
-        environment?: core.Supplier<environments.RivetClientEnvironment | string>;
-        token: core.Supplier<core.BearerToken>;
+        environment?: core.Supplier<environments.RivetEnvironment | string>;
+        token?: core.Supplier<core.BearerToken | undefined>;
         fetcher?: core.FetchFunction;
     }
 
@@ -23,22 +23,24 @@ export declare namespace Regions {
         maxRetries?: number;
         /** A hook to abort the request. */
         abortSignal?: AbortSignal;
+        /** Additional headers to include in the request. */
+        headers?: Record<string, string>;
     }
 }
 
 export class Regions {
-    constructor(protected readonly _options: Regions.Options) {}
+    constructor(protected readonly _options: Regions.Options = {}) {}
 
     /**
-     * @param {RivetClient.actor.ListRegionsRequestQuery} request
+     * @param {Rivet.actor.ListRegionsRequestQuery} request
      * @param {Regions.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link RivetClient.InternalError}
-     * @throws {@link RivetClient.RateLimitError}
-     * @throws {@link RivetClient.ForbiddenError}
-     * @throws {@link RivetClient.UnauthorizedError}
-     * @throws {@link RivetClient.NotFoundError}
-     * @throws {@link RivetClient.BadRequestError}
+     * @throws {@link Rivet.InternalError}
+     * @throws {@link Rivet.RateLimitError}
+     * @throws {@link Rivet.ForbiddenError}
+     * @throws {@link Rivet.UnauthorizedError}
+     * @throws {@link Rivet.NotFoundError}
+     * @throws {@link Rivet.BadRequestError}
      *
      * @example
      *     await client.actor.regions.list({
@@ -47,9 +49,9 @@ export class Regions {
      *     })
      */
     public async list(
-        request: RivetClient.actor.ListRegionsRequestQuery = {},
+        request: Rivet.actor.ListRegionsRequestQuery = {},
         requestOptions?: Regions.RequestOptions
-    ): Promise<RivetClient.actor.ListRegionsResponse> {
+    ): Promise<Rivet.actor.ListRegionsResponse> {
         const { project, environment } = request;
         const _queryParams: Record<string, string | string[] | object | object[]> = {};
         if (project != null) {
@@ -62,7 +64,7 @@ export class Regions {
 
         const _response = await (this._options.fetcher ?? core.fetcher)({
             url: urlJoin(
-                (await core.Supplier.get(this._options.environment)) ?? environments.RivetClientEnvironment.Production,
+                (await core.Supplier.get(this._options.environment)) ?? environments.RivetEnvironment.Production,
                 "/regions"
             ),
             method: "GET",
@@ -71,6 +73,7 @@ export class Regions {
                 "X-Fern-Language": "JavaScript",
                 "X-Fern-Runtime": core.RUNTIME.type,
                 "X-Fern-Runtime-Version": core.RUNTIME.version,
+                ...requestOptions?.headers,
             },
             contentType: "application/json",
             queryParameters: _queryParams,
@@ -92,7 +95,7 @@ export class Regions {
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 500:
-                    throw new RivetClient.InternalError(
+                    throw new Rivet.InternalError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -102,7 +105,7 @@ export class Regions {
                         })
                     );
                 case 429:
-                    throw new RivetClient.RateLimitError(
+                    throw new Rivet.RateLimitError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -112,7 +115,7 @@ export class Regions {
                         })
                     );
                 case 403:
-                    throw new RivetClient.ForbiddenError(
+                    throw new Rivet.ForbiddenError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -122,7 +125,7 @@ export class Regions {
                         })
                     );
                 case 408:
-                    throw new RivetClient.UnauthorizedError(
+                    throw new Rivet.UnauthorizedError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -132,7 +135,7 @@ export class Regions {
                         })
                     );
                 case 404:
-                    throw new RivetClient.NotFoundError(
+                    throw new Rivet.NotFoundError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -142,7 +145,7 @@ export class Regions {
                         })
                     );
                 case 400:
-                    throw new RivetClient.BadRequestError(
+                    throw new Rivet.BadRequestError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -152,7 +155,7 @@ export class Regions {
                         })
                     );
                 default:
-                    throw new errors.RivetClientError({
+                    throw new errors.RivetError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                     });
@@ -161,20 +164,171 @@ export class Regions {
 
         switch (_response.error.reason) {
             case "non-json":
-                throw new errors.RivetClientError({
+                throw new errors.RivetError({
                     statusCode: _response.error.statusCode,
                     body: _response.error.rawBody,
                 });
             case "timeout":
-                throw new errors.RivetClientTimeoutError();
+                throw new errors.RivetTimeoutError("Timeout exceeded when calling GET /regions.");
             case "unknown":
-                throw new errors.RivetClientError({
+                throw new errors.RivetError({
                     message: _response.error.errorMessage,
                 });
         }
     }
 
-    protected async _getAuthorizationHeader(): Promise<string> {
-        return `Bearer ${await core.Supplier.get(this._options.token)}`;
+    /**
+     * @param {Rivet.actor.ResolveRegionsRequestQuery} request
+     * @param {Regions.RequestOptions} requestOptions - Request-specific configuration.
+     *
+     * @throws {@link Rivet.InternalError}
+     * @throws {@link Rivet.RateLimitError}
+     * @throws {@link Rivet.ForbiddenError}
+     * @throws {@link Rivet.UnauthorizedError}
+     * @throws {@link Rivet.NotFoundError}
+     * @throws {@link Rivet.BadRequestError}
+     *
+     * @example
+     *     await client.actor.regions.resolve({
+     *         lat: 1.1,
+     *         long: 1.1
+     *     })
+     */
+    public async resolve(
+        request: Rivet.actor.ResolveRegionsRequestQuery = {},
+        requestOptions?: Regions.RequestOptions
+    ): Promise<Rivet.actor.ResolveRegionResponse> {
+        const { lat, long } = request;
+        const _queryParams: Record<string, string | string[] | object | object[]> = {};
+        if (lat != null) {
+            _queryParams["lat"] = lat.toString();
+        }
+
+        if (long != null) {
+            _queryParams["long"] = long.toString();
+        }
+
+        const _response = await (this._options.fetcher ?? core.fetcher)({
+            url: urlJoin(
+                (await core.Supplier.get(this._options.environment)) ?? environments.RivetEnvironment.Production,
+                "/regions/resolve"
+            ),
+            method: "GET",
+            headers: {
+                Authorization: await this._getAuthorizationHeader(),
+                "X-Fern-Language": "JavaScript",
+                "X-Fern-Runtime": core.RUNTIME.type,
+                "X-Fern-Runtime-Version": core.RUNTIME.version,
+                ...requestOptions?.headers,
+            },
+            contentType: "application/json",
+            queryParameters: _queryParams,
+            requestType: "json",
+            timeoutMs: requestOptions?.timeoutInSeconds != null ? requestOptions.timeoutInSeconds * 1000 : 180000,
+            maxRetries: requestOptions?.maxRetries,
+            abortSignal: requestOptions?.abortSignal,
+        });
+        if (_response.ok) {
+            return serializers.actor.ResolveRegionResponse.parseOrThrow(_response.body, {
+                unrecognizedObjectKeys: "passthrough",
+                allowUnrecognizedUnionMembers: true,
+                allowUnrecognizedEnumValues: true,
+                skipValidation: true,
+                breadcrumbsPrefix: ["response"],
+            });
+        }
+
+        if (_response.error.reason === "status-code") {
+            switch (_response.error.statusCode) {
+                case 500:
+                    throw new Rivet.InternalError(
+                        serializers.ErrorBody.parseOrThrow(_response.error.body, {
+                            unrecognizedObjectKeys: "passthrough",
+                            allowUnrecognizedUnionMembers: true,
+                            allowUnrecognizedEnumValues: true,
+                            skipValidation: true,
+                            breadcrumbsPrefix: ["response"],
+                        })
+                    );
+                case 429:
+                    throw new Rivet.RateLimitError(
+                        serializers.ErrorBody.parseOrThrow(_response.error.body, {
+                            unrecognizedObjectKeys: "passthrough",
+                            allowUnrecognizedUnionMembers: true,
+                            allowUnrecognizedEnumValues: true,
+                            skipValidation: true,
+                            breadcrumbsPrefix: ["response"],
+                        })
+                    );
+                case 403:
+                    throw new Rivet.ForbiddenError(
+                        serializers.ErrorBody.parseOrThrow(_response.error.body, {
+                            unrecognizedObjectKeys: "passthrough",
+                            allowUnrecognizedUnionMembers: true,
+                            allowUnrecognizedEnumValues: true,
+                            skipValidation: true,
+                            breadcrumbsPrefix: ["response"],
+                        })
+                    );
+                case 408:
+                    throw new Rivet.UnauthorizedError(
+                        serializers.ErrorBody.parseOrThrow(_response.error.body, {
+                            unrecognizedObjectKeys: "passthrough",
+                            allowUnrecognizedUnionMembers: true,
+                            allowUnrecognizedEnumValues: true,
+                            skipValidation: true,
+                            breadcrumbsPrefix: ["response"],
+                        })
+                    );
+                case 404:
+                    throw new Rivet.NotFoundError(
+                        serializers.ErrorBody.parseOrThrow(_response.error.body, {
+                            unrecognizedObjectKeys: "passthrough",
+                            allowUnrecognizedUnionMembers: true,
+                            allowUnrecognizedEnumValues: true,
+                            skipValidation: true,
+                            breadcrumbsPrefix: ["response"],
+                        })
+                    );
+                case 400:
+                    throw new Rivet.BadRequestError(
+                        serializers.ErrorBody.parseOrThrow(_response.error.body, {
+                            unrecognizedObjectKeys: "passthrough",
+                            allowUnrecognizedUnionMembers: true,
+                            allowUnrecognizedEnumValues: true,
+                            skipValidation: true,
+                            breadcrumbsPrefix: ["response"],
+                        })
+                    );
+                default:
+                    throw new errors.RivetError({
+                        statusCode: _response.error.statusCode,
+                        body: _response.error.body,
+                    });
+            }
+        }
+
+        switch (_response.error.reason) {
+            case "non-json":
+                throw new errors.RivetError({
+                    statusCode: _response.error.statusCode,
+                    body: _response.error.rawBody,
+                });
+            case "timeout":
+                throw new errors.RivetTimeoutError("Timeout exceeded when calling GET /regions/resolve.");
+            case "unknown":
+                throw new errors.RivetError({
+                    message: _response.error.errorMessage,
+                });
+        }
+    }
+
+    protected async _getAuthorizationHeader(): Promise<string | undefined> {
+        const bearer = await core.Supplier.get(this._options.token);
+        if (bearer != null) {
+            return `Bearer ${bearer}`;
+        }
+
+        return undefined;
     }
 }

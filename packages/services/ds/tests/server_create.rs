@@ -1,6 +1,5 @@
 use chirp_workflow::prelude::*;
 use ds::types;
-// use rivet_api::{apis::*, models};
 use rivet_operation::prelude::proto::backend;
 use serde_json::json;
 
@@ -12,6 +11,14 @@ async fn server_create(ctx: TestCtx) {
 	.await
 	.unwrap();
 	let env_id = game_res.prod_env_id.unwrap();
+
+	ctx.op(ds::ops::game_config::upsert::Input {
+		game_id: game_res.game_id.unwrap().as_uuid(),
+		host_networking_enabled: Some(true),
+		..Default::default()
+	})
+	.await
+	.unwrap();
 
 	// Pick an existing cluster
 	let cluster_id = ctx
@@ -25,7 +32,7 @@ async fn server_create(ctx: TestCtx) {
 
 	let build_res = op!([ctx] faker_build {
 		env_id: Some(env_id),
-		image: backend::faker::Image::DsEcho as i32,
+		image: backend::faker::Image::JsEcho as i32,
 	})
 	.await
 	.unwrap();
@@ -38,15 +45,14 @@ async fn server_create(ctx: TestCtx) {
 			"some_other_envkey_test".to_string(),
 			"4325234356".to_string(),
 		),
-		("HTTP_PORT".to_string(), 28234.to_string()),
 	]
 	.into_iter()
 	.collect();
 
 	let ports = vec![(
-		"testing2".to_string(),
+		"ds_testing2".to_string(),
 		ds::workflows::server::Port {
-			internal_port: Some(28234),
+			internal_port: None,
 			routing: types::Routing::GameGuard {
 				protocol: types::GameGuardProtocol::Http,
 				authorization: types::PortAuthorization::None,
@@ -87,7 +93,7 @@ async fn server_create(ctx: TestCtx) {
 		args: Vec::new(),
 		environment: env,
 		image_id: build_res.build_id.unwrap().as_uuid(),
-		network_mode: types::NetworkMode::Bridge,
+		network_mode: types::NetworkMode::Host,
 		network_ports: ports,
 	})
 	.tag("server_id", server_id)
@@ -105,6 +111,7 @@ async fn server_create(ctx: TestCtx) {
 		let server = ctx
 			.op(ds::ops::server::get::Input {
 				server_ids: vec![server_id],
+				endpoint_type: Some(ds::types::EndpointType::Hostname),
 			})
 			.await
 			.unwrap()
@@ -113,7 +120,7 @@ async fn server_create(ctx: TestCtx) {
 			.next()
 			.unwrap();
 
-		let port = server.network_ports.get("testing2").unwrap();
+		let port = server.network_ports.get("ds_testing2").unwrap();
 
 		if let Some(hostname) = port.public_hostname.as_ref() {
 			break (hostname.clone(), port.public_port.unwrap());

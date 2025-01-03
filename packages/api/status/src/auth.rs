@@ -17,13 +17,10 @@ impl ApiAuth for Auth {
 
 		// TODO: Use JWT
 		if let Some(api_token) = api_token {
+			let status_token = config.server()?.rivet.status()?.token.read();
 			ensure_eq_with!(
 				api_token,
-				*unwrap_ref!(
-					config.server()?.rivet.token.status,
-					"no api status token provided"
-				)
-				.read(),
+				*status_token,
 				API_FORBIDDEN,
 				reason = "Invalid auth"
 			);
@@ -34,7 +31,7 @@ impl ApiAuth for Auth {
 	}
 
 	async fn rate_limit(
-		config: &rivet_config::Config,
+		_config: &rivet_config::Config,
 		_rate_limit_ctx: AuthRateLimitCtx<'_>,
 	) -> GlobalResult<()> {
 		Ok(())

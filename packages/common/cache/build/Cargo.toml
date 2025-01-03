@@ -19,14 +19,13 @@ rivet-util.workspace = true
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
-tokio = { version = "1.36", features = ["full"] }
+tokio = { version = "1.40", features = ["full"] }
 tracing = "0.1"
 types-proto.workspace = true
 uuid = { version = "1", features = ["v4"] }
 
 [dependencies.redis]
 workspace = true
-default-features = false
 features = [
 	"keep-alive",
 	"aio",

@@ -63,7 +63,7 @@ impl Actor {
 		// Write actor to DB
 		let config_json = serde_json::to_vec(&self.config)?;
 
-		utils::query(|| async {
+		utils::sql::query(|| async {
 			// NOTE: On conflict here in case this query runs but the command is not acknowledged
 			sqlx::query(indoc!(
 				"
@@ -109,7 +109,9 @@ impl Actor {
 			}
 
 			// Cleanup afterwards
-			self2.cleanup(&ctx2).await
+			if let Err(err) = self2.cleanup(&ctx2).await {
+				tracing::error!(actor_id=?self2.actor_id, ?err, "cleanup failed");
+			}
 		});
 
 		Ok(())
@@ -199,7 +201,7 @@ impl Actor {
 		}
 
 		// Update DB
-		utils::query(|| async {
+		utils::sql::query(|| async {
 			sqlx::query(indoc!(
 				"
 				UPDATE actors
@@ -285,14 +287,14 @@ impl Actor {
 		self: &Arc<Self>,
 		ctx: &Arc<Ctx>,
 		signal: Signal,
-		persist_state: bool,
+		persist_storage: bool,
 	) -> Result<()> {
 		tracing::info!(actor_id=?self.actor_id, ?signal, "sending signal");
 
 		let self2 = self.clone();
 		let ctx2 = ctx.clone();
 		tokio::spawn(async move {
-			if let Err(err) = self2.signal_inner(&ctx2, signal, persist_state).await {
+			if let Err(err) = self2.signal_inner(&ctx2, signal, persist_storage).await {
 				tracing::error!(?err, "actor signal failed");
 			}
 		});
@@ -304,7 +306,7 @@ impl Actor {
 		self: &Arc<Self>,
 		ctx: &Arc<Ctx>,
 		signal: Signal,
-		persist_state: bool,
+		persist_storage: bool,
 	) -> Result<()> {
 		let mut i = 0;
 
@@ -342,7 +344,7 @@ impl Actor {
 					.send(&runner_protocol::ToRunner::Signal {
 						actor_id: self.actor_id,
 						signal: signal as i32,
-						persist_state,
+						persist_storage,
 					})
 					.await?;
 			}
@@ -354,7 +356,7 @@ impl Actor {
 
 		// Update stop_ts
 		if matches!(signal, Signal::SIGTERM | Signal::SIGKILL) || !has_runner {
-			let stop_ts_set = utils::query(|| async {
+			let stop_ts_set = utils::sql::query(|| async {
 				sqlx::query_as::<_, (bool,)>(indoc!(
 					"
 					UPDATE actors
@@ -396,7 +398,7 @@ impl Actor {
 		}
 
 		// Update DB
-		utils::query(|| async {
+		utils::sql::query(|| async {
 			sqlx::query(indoc!(
 				"
 				UPDATE actors
@@ -415,7 +417,7 @@ impl Actor {
 		.await?;
 
 		// Unbind ports
-		utils::query(|| async {
+		utils::sql::query(|| async {
 			sqlx::query(indoc!(
 				"
 				UPDATE actor_ports
@@ -454,6 +456,9 @@ impl Actor {
 		// Set exit code if it hasn't already been set
 		self.set_exit_code(ctx, None).await?;
 
-		self.cleanup_setup(ctx).await
+		// Cleanup setup. Should only be called after the exit code is set successfully for consistent state
+		self.cleanup_setup(ctx).await;
+
+		Ok(())
 	}
 }

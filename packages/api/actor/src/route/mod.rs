@@ -57,7 +57,7 @@ define_router! {
 				},
 			),
 			POST: actors::create(
-				query: GlobalQuery,
+				query: actors::GlobalEndpointTypeQuery,
 				body: models::ActorCreateActorRequest,
 				opt_auth: true,
 				rate_limit: {
@@ -83,7 +83,7 @@ define_router! {
 
 		"actors" / Uuid: {
 			GET: actors::get(
-				query: GlobalQuery,
+				query: actors::GlobalEndpointTypeQuery,
 				opt_auth: true,
 				rate_limit: {
 					buckets: [
@@ -182,6 +182,12 @@ define_router! {
 						{ count: 60_000, bucket: duration::minutes(1) },
 					],
 				},
+			),
+		},
+		"regions" / "resolve": {
+			GET: regions::resolve(
+				query: regions::ResolveQuery,
+				opt_auth: true,
 			),
 		},
 

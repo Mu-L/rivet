@@ -1,5 +1,7 @@
 # MARK: Builder
-# TODO(RVT-4168): Copmile libfdb from scratch for ARM
+# Stick with Debian 11 (Bullseye) since clients depend on libssl 1.1.
+
+# TODO(RVT-4168): Compile libfdb from scratch for ARM
 FROM --platform=linux/amd64 rust:1.82.0-bullseye AS builder
 
 RUN apt-get update && apt-get install --yes libclang-dev protobuf-compiler pkg-config libssl-dev g++ git wget curl && \
@@ -11,14 +13,13 @@ RUN \
 	--mount=type=secret,id=netrc,target=/root/.netrc,mode=0600 \
 	--mount=type=cache,target=/usr/local/cargo/git,id=dev-full-client-cargo-git \
 	--mount=type=cache,target=/usr/local/cargo/registry,id=dev-full-client-cargo-registry \
-	--mount=type=cache,target=/app/packages/infra/client/target,id=dev-full-client-target \
-	cd packages/infra/client && \
+	--mount=type=cache,target=/app/target,id=dev-full-client-target \
 	RUSTFLAGS="--cfg tokio_unstable" cargo build --bin rivet-client --bin rivet-isolate-v8-runner --bin rivet-container-runner && \
 	mkdir -p /app/dist && \
 	mv target/debug/rivet-client target/debug/rivet-isolate-v8-runner target/debug/rivet-container-runner /app/dist/
 
 # MARK: Runner
-FROM --platform=linux/amd64 debian:12-slim
+FROM --platform=linux/amd64 debian:11-slim
 # The FDB version should match `cluster::workflows::server::install::install_scripts::components::fdb::FDB_VERSION`
 RUN DEBIAN_FRONTEND=noninteractive apt-get update -y && \
 	apt-get install -y --no-install-recommends ca-certificates curl && \

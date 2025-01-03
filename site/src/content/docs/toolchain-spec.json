@@ -1,0 +1,291 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Root",
+  "type": "object",
+  "required": [
+    "builds"
+  ],
+  "properties": {
+    "builds": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/Build"
+      }
+    },
+    "unstable": {
+      "$ref": "#/definitions/Unstable3"
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "Build": {
+      "type": "object",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Build2"
+        },
+        {
+          "$ref": "#/definitions/Build3"
+        }
+      ],
+      "required": [
+        "access"
+      ],
+      "properties": {
+        "access": {
+          "$ref": "#/definitions/BuildAccess"
+        },
+        "tags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "Build2": {
+      "type": "object",
+      "properties": {
+        "build_args": {
+          "description": "Build arguments to pass to the build.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "build_path": {
+          "description": "Directory to build the Docker image from.",
+          "type": "string"
+        },
+        "build_target": {
+          "description": "Build target to upload.",
+          "type": "string"
+        },
+        "dockerfile": {
+          "description": "Dockerfile to build.",
+          "type": "string"
+        },
+        "image": {
+          "description": "Existing image tag to upload.",
+          "type": "string"
+        },
+        "unstable": {
+          "description": "Unstable features.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Unstable"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Build3": {
+      "type": "object",
+      "required": [
+        "script"
+      ],
+      "properties": {
+        "bundler": {
+          "$ref": "#/definitions/Bundler"
+        },
+        "deno": {
+          "default": {
+            "config_path": null,
+            "import_map_url": null,
+            "lock_path": null
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/Deno"
+            }
+          ]
+        },
+        "script": {
+          "type": "string"
+        },
+        "unstable": {
+          "default": {
+            "minify": null,
+            "analyze_result": null,
+            "esbuild_log_level": null,
+            "compression": null,
+            "dump_build": null
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/Unstable2"
+            }
+          ]
+        }
+      }
+    },
+    "BuildAccess": {
+      "type": "string",
+      "enum": [
+        "public",
+        "private"
+      ]
+    },
+    "BuildMethod": {
+      "oneOf": [
+        {
+          "description": "Use the native Docker build command. Only used if Buildx is not available.",
+          "type": "string",
+          "enum": [
+            "buildx"
+          ]
+        },
+        {
+          "description": "Create & use a Buildx builder on this machine. Required for cross-platform compilation.",
+          "type": "string",
+          "enum": [
+            "native"
+          ]
+        }
+      ]
+    },
+    "BundleKind": {
+      "oneOf": [
+        {
+          "description": "Legacy option. Docker image archive output from `docker save`. Slower lobby start times.",
+          "type": "string",
+          "enum": [
+            "docker_image"
+          ]
+        },
+        {
+          "description": "OCI bundle archive derived from a generated Docker image. Optimized for fast lobby start times.",
+          "type": "string",
+          "enum": [
+            "oci_bundle"
+          ]
+        }
+      ]
+    },
+    "Bundler": {
+      "type": "string",
+      "enum": [
+        "deno",
+        "none"
+      ]
+    },
+    "Compression": {
+      "oneOf": [
+        {
+          "description": "No compression.",
+          "type": "string",
+          "enum": [
+            "none"
+          ]
+        },
+        {
+          "description": "LZ4 compression. Fast compression optimized for fast lobby start times.",
+          "type": "string",
+          "enum": [
+            "lz4"
+          ]
+        }
+      ]
+    },
+    "Deno": {
+      "type": "object",
+      "properties": {
+        "config_path": {
+          "type": "string"
+        },
+        "import_map_url": {
+          "type": "string"
+        },
+        "lock_path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ManagerUnstable": {
+      "type": "object",
+      "properties": {
+        "analyze_result": {
+          "type": "boolean"
+        },
+        "compression": {
+          "$ref": "#/definitions/Compression"
+        },
+        "dump_build": {
+          "type": "boolean"
+        },
+        "enable": {
+          "type": "boolean"
+        },
+        "esbuild_log_level": {
+          "type": "string"
+        },
+        "minify": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Unstable": {
+      "type": "object",
+      "properties": {
+        "allow_root": {
+          "type": "boolean"
+        },
+        "build_method": {
+          "$ref": "#/definitions/BuildMethod"
+        },
+        "bundle": {
+          "$ref": "#/definitions/BundleKind"
+        },
+        "compression": {
+          "$ref": "#/definitions/Compression"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Unstable2": {
+      "type": "object",
+      "properties": {
+        "analyze_result": {
+          "type": "boolean"
+        },
+        "compression": {
+          "$ref": "#/definitions/Compression"
+        },
+        "dump_build": {
+          "type": "boolean"
+        },
+        "esbuild_log_level": {
+          "type": "string"
+        },
+        "minify": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Unstable3": {
+      "type": "object",
+      "properties": {
+        "manager": {
+          "default": {
+            "enable": null,
+            "minify": null,
+            "analyze_result": null,
+            "esbuild_log_level": null,
+            "compression": null,
+            "dump_build": null
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ManagerUnstable"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

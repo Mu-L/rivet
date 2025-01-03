@@ -11,9 +11,10 @@ import (
 )
 
 type CreateActorRequestQuery struct {
-	Project     *string             `json:"-"`
-	Environment *string             `json:"-"`
-	Body        *CreateActorRequest `json:"-"`
+	Project      *string             `json:"-"`
+	Environment  *string             `json:"-"`
+	EndpointType *EndpointType       `json:"-"`
+	Body         *CreateActorRequest `json:"-"`
 }
 
 func (c *CreateActorRequestQuery) UnmarshalJSON(data []byte) error {
@@ -37,16 +38,18 @@ type DestroyActorRequestQuery struct {
 }
 
 type ListActorsRequestQuery struct {
-	Project     *string `json:"-"`
-	Environment *string `json:"-"`
+	Project      *string       `json:"-"`
+	Environment  *string       `json:"-"`
+	EndpointType *EndpointType `json:"-"`
 }
 
 type GetActorsRequestQuery struct {
-	Project          *string    `json:"-"`
-	Environment      *string    `json:"-"`
-	TagsJson         *string    `json:"-"`
-	IncludeDestroyed *bool      `json:"-"`
-	Cursor           *uuid.UUID `json:"-"`
+	Project          *string       `json:"-"`
+	Environment      *string       `json:"-"`
+	EndpointType     *EndpointType `json:"-"`
+	TagsJson         *string       `json:"-"`
+	IncludeDestroyed *bool         `json:"-"`
+	Cursor           *uuid.UUID    `json:"-"`
 }
 
 type BuildCompression string
@@ -174,9 +177,29 @@ func (b *Build) String() string {
 	return fmt.Sprintf("%#v", b)
 }
 
-type GuardRouting struct {
-	Authorization *PortAuthorization `json:"authorization,omitempty"`
+type EndpointType string
 
+const (
+	EndpointTypeHostname EndpointType = "hostname"
+	EndpointTypePath     EndpointType = "path"
+)
+
+func NewEndpointTypeFromString(s string) (EndpointType, error) {
+	switch s {
+	case "hostname":
+		return EndpointTypeHostname, nil
+	case "path":
+		return EndpointTypePath, nil
+	}
+	var t EndpointType
+	return "", fmt.Errorf("%s is not a valid %T", s, t)
+}
+
+func (e EndpointType) Ptr() *EndpointType {
+	return &e
+}
+
+type GuardRouting struct {
 	_rawJSON json.RawMessage
 }
 
@@ -315,11 +338,12 @@ func (n NetworkMode) Ptr() *NetworkMode {
 }
 
 type Port struct {
-	Protocol       PortProtocol `json:"protocol,omitempty"`
-	InternalPort   *int         `json:"internal_port,omitempty"`
-	PublicHostname *string      `json:"public_hostname,omitempty"`
-	PublicPort     *int         `json:"public_port,omitempty"`
-	Routing        *PortRouting `json:"routing,omitempty"`
+	Protocol     PortProtocol `json:"protocol,omitempty"`
+	InternalPort *int         `json:"internal_port,omitempty"`
+	Hostname     *string      `json:"hostname,omitempty"`
+	Port         *int         `json:"port,omitempty"`
+	Path         *string      `json:"path,omitempty"`
+	Routing      *PortRouting `json:"routing,omitempty"`
 
 	_rawJSON json.RawMessage
 }
@@ -336,36 +360,6 @@ func (p *Port) UnmarshalJSON(data []byte) error {
 }
 
 func (p *Port) String() string {
-	if len(p._rawJSON) > 0 {
-		if value, err := core.StringifyJSON(p._rawJSON); err == nil {
-			return value
-		}
-	}
-	if value, err := core.StringifyJSON(p); err == nil {
-		return value
-	}
-	return fmt.Sprintf("%#v", p)
-}
-
-type PortAuthorization struct {
-	Bearer *string                 `json:"bearer,omitempty"`
-	Query  *PortQueryAuthorization `json:"query,omitempty"`
-
-	_rawJSON json.RawMessage
-}
-
-func (p *PortAuthorization) UnmarshalJSON(data []byte) error {
-	type unmarshaler PortAuthorization
-	var value unmarshaler
-	if err := json.Unmarshal(data, &value); err != nil {
-		return err
-	}
-	*p = PortAuthorization(value)
-	p._rawJSON = json.RawMessage(data)
-	return nil
-}
-
-func (p *PortAuthorization) String() string {
 	if len(p._rawJSON) > 0 {
 		if value, err := core.StringifyJSON(p._rawJSON); err == nil {
 			return value
@@ -406,36 +400,6 @@ func NewPortProtocolFromString(s string) (PortProtocol, error) {
 
 func (p PortProtocol) Ptr() *PortProtocol {
 	return &p
-}
-
-type PortQueryAuthorization struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
-
-	_rawJSON json.RawMessage
-}
-
-func (p *PortQueryAuthorization) UnmarshalJSON(data []byte) error {
-	type unmarshaler PortQueryAuthorization
-	var value unmarshaler
-	if err := json.Unmarshal(data, &value); err != nil {
-		return err
-	}
-	*p = PortQueryAuthorization(value)
-	p._rawJSON = json.RawMessage(data)
-	return nil
-}
-
-func (p *PortQueryAuthorization) String() string {
-	if len(p._rawJSON) > 0 {
-		if value, err := core.StringifyJSON(p._rawJSON); err == nil {
-			return value
-		}
-	}
-	if value, err := core.StringifyJSON(p); err == nil {
-		return value
-	}
-	return fmt.Sprintf("%#v", p)
 }
 
 type PortRouting struct {

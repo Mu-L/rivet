@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::{
 	builder::BuilderError, ctx::WorkflowCtx, error::WorkflowError, history::cursor::HistoryResult,
-	message::Message,
+	message::Message, metrics,
 };
 
 pub struct MessageBuilder<'a, M: Message> {
@@ -61,7 +61,7 @@ impl<'a, M: Message> MessageBuilder<'a, M> {
 		self
 	}
 
-	pub async fn wait(mut self) -> Self {
+	pub fn wait(mut self) -> Self {
 		if self.error.is_some() {
 			return self;
 		}
@@ -130,6 +130,10 @@ impl<'a, M: Message> MessageBuilder<'a, M> {
 
 			msg.map_err(GlobalError::raw)?;
 			write.map_err(GlobalError::raw)?;
+
+			metrics::MESSAGE_PUBLISHED
+				.with_label_values(&[M::NAME])
+				.inc();
 		}
 
 		// Move to next event

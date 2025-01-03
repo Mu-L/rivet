@@ -97,7 +97,12 @@ pub fn config(rivet_config: rivet_config::Config) -> Result<RunConfigData> {
 		Service::new(
 			"cluster_default_update",
 			ServiceKind::Oneshot,
-			|config, pools| Box::pin(cluster_default_update::start(config, pools, false)),
+			|config, pools| Box::pin(cluster_default_update::start(config, pools)),
+		),
+		Service::new(
+			"pegboard_metrics_publish",
+			ServiceKind::Singleton,
+			|config, pools| Box::pin(pegboard_metrics_publish::start(config, pools)),
 		),
 	];
 

@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{ctx::WorkflowCtx, db::DatabaseHandle, metrics, registry::RegistryHandle, utils};
 
-pub const TICK_INTERVAL: Duration = Duration::from_secs(5);
+pub const TICK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Used to spawn a new thread that indefinitely polls the database for new workflows. Only pulls workflows
 /// that are registered in its registry. After pulling, the workflows are ran and their state is written to
@@ -19,8 +19,8 @@ pub struct Worker {
 impl Worker {
 	pub fn new(registry: RegistryHandle, db: DatabaseHandle) -> Self {
 		// Get rid of metrics that don't exist in the db anymore (declarative)
-		metrics::PULL_WORKFLOWS_FULL_DURATION.reset();
-		metrics::PULL_WORKFLOWS_PARTIAL_DURATION.reset();
+		metrics::PULL_WORKFLOWS_DURATION.reset();
+		metrics::PULL_WORKFLOWS_HISTORY_DURATION.reset();
 
 		Worker {
 			worker_instance_id: Uuid::new_v4(),

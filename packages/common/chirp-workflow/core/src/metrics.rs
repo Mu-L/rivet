@@ -7,15 +7,21 @@ lazy_static::lazy_static! {
 		&[],
 		*REGISTRY,
 	).unwrap();
-	pub static ref PULL_WORKFLOWS_PARTIAL_DURATION: GaugeVec = register_gauge_vec_with_registry!(
-		"chirp_pull_workflows_partial_duration",
-		"Duration of just pulling workflows.",
+	pub static ref PULL_WORKFLOWS_DURATION: GaugeVec = register_gauge_vec_with_registry!(
+		"chirp_pull_workflows_duration",
+		"Duration of just pulling workflow rows.",
+		&["worker_instance_id"],
+		*REGISTRY,
+	).unwrap();
+	pub static ref PULL_WORKFLOWS_HISTORY_DURATION: GaugeVec = register_gauge_vec_with_registry!(
+		"chirp_pull_workflows_history_duration",
+		"Duration of pulling workflow histories.",
 		&["worker_instance_id"],
 		*REGISTRY,
 	).unwrap();
 	pub static ref PULL_WORKFLOWS_FULL_DURATION: GaugeVec = register_gauge_vec_with_registry!(
 		"chirp_pull_workflows_full_duration",
-		"Duration of pulling workflows and their histories.",
+		"Duration of pulling workflow rows and history.",
 		&["worker_instance_id"],
 		*REGISTRY,
 	).unwrap();
@@ -84,6 +90,27 @@ lazy_static::lazy_static! {
 		"Total duration to pull signals.",
 		&["workflow_name", "signal_name"],
 		BUCKETS.to_vec(),
+		*REGISTRY,
+	).unwrap();
+
+	pub static ref SIGNAL_PUBLISHED: IntCounterVec = register_int_counter_vec_with_registry!(
+		"chirp_workflow_signal_published",
+		"Total published signals.",
+		&["signal_name"],
+		*REGISTRY,
+	).unwrap();
+
+	pub static ref MESSAGE_PUBLISHED: IntCounterVec = register_int_counter_vec_with_registry!(
+		"chirp_workflow_message_published",
+		"Total published messages.",
+		&["message_name"],
+		*REGISTRY,
+	).unwrap();
+
+	pub static ref WORKFLOW_DISPATCHED: IntCounterVec = register_int_counter_vec_with_registry!(
+		"chirp_workflow_workflow_dispatched",
+		"Total dispatched workflows.",
+		&["workflow_name"],
 		*REGISTRY,
 	).unwrap();
 }

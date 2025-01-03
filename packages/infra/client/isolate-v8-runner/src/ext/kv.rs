@@ -2,6 +2,7 @@ use std::{collections::HashMap, future::Future, sync::Arc};
 
 use deno_core::{error::AnyError, op2, JsBuffer, OpState, ToJsBuffer};
 use serde::Serialize;
+use pegboard_actor_kv as actor_kv;
 
 type FakeMap<T, U> = Box<[(T, U)]>;
 
@@ -19,6 +20,13 @@ deno_core::extension!(
   ],
   esm = [
 	dir "js",
+	// Order matters
+	"lib/fast-equals/utils.js",
+	"lib/fast-equals/equals.js",
+	"lib/fast-equals/comparator.js",
+	"lib/fast-equals/internalTypes.js",
+	"lib/fast-equals/index.js",
+
 	"40_rivet_kv.js",
   ],
   options = {

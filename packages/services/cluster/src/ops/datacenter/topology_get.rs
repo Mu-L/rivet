@@ -19,6 +19,7 @@ struct ServerRow {
 	pegboard_client_id: Option<Uuid>,
 }
 
+#[derive(Debug)]
 struct ServerRowStructured {
 	server_id: Uuid,
 	datacenter_id: Uuid,
@@ -86,6 +87,8 @@ pub struct Server {
 	pub pool_type: PoolType,
 	pub usage: Stats,
 	pub limits: Stats,
+	/// Whether or not metrics for this server could not be found and ended up defaulting
+	pub missing: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -123,17 +126,25 @@ pub async fn cluster_datacenter_topology_get(
 	.map(TryInto::<ServerRowStructured>::try_into)
 	.collect::<GlobalResult<Vec<_>>>()?;
 
-	// Fetch batch data from nomad
-	let (
-		datacenters_res,
-		pb_client_usage_res,
-		(hardware_specs, prometheus_metrics),
-		allocation_info,
-		node_info,
-	) = tokio::try_join!(
-		ctx.op(crate::ops::datacenter::get::Input {
+	let datacenters_res = ctx
+		.op(crate::ops::datacenter::get::Input {
 			datacenter_ids: input.datacenter_ids.clone(),
-		}),
+		})
+		.await?;
+
+	// Get the first hardware id from each datacenters' pools
+	let default_hardware_ids = datacenters_res
+		.datacenters
+		.iter()
+		.flat_map(|dc| &dc.pools)
+		.map(|pool| {
+			Ok(unwrap!(pool.hardware.first(), "no hardware")
+				.provider_hardware
+				.clone())
+		});
+
+	// Fetch batch data from nomad
+	let (pb_client_usage_res, (hardware_specs, prometheus_metrics), allocation_info, node_info) = tokio::try_join!(
 		ctx.op(pegboard::ops::client::usage_get::Input {
 			client_ids: servers
 				.iter()
@@ -147,13 +158,17 @@ pub async fn cluster_datacenter_topology_get(
 				.collect(),
 		}),
 		async {
+			let server_hardware_ids = servers
+				.iter()
+				.filter_map(|s| s.provider_hardware.clone())
+				.map(Ok);
+
 			// Fetch hardware for each server
 			let instance_types = if ctx.config().server()?.linode.is_some() {
 				ctx.op(linode::ops::instance_type_get::Input {
-					hardware_ids: servers
-						.iter()
-						.filter_map(|s| s.provider_hardware.clone())
-						.collect::<HashSet<_>>()
+					hardware_ids: default_hardware_ids
+						.chain(server_hardware_ids)
+						.collect::<GlobalResult<HashSet<_>>>()?
 						.into_iter()
 						.collect::<Vec<_>>(),
 				})
@@ -277,7 +292,7 @@ pub async fn cluster_datacenter_topology_get(
 		// We assume a server has the default memory
 		// amount (memory of the first hardware in the list) if it is not provisioned yet
 
-		let (usage, limits) = match &server.runtime {
+		let (usage, limits, missing) = match &server.runtime {
 			Runtime::Nomad(nomad_node_id) => {
 				// Gracefully handle if node does not exist in API response
 				if let Some(node) = node_info.iter().find(|node| {
@@ -340,30 +355,33 @@ pub async fn cluster_datacenter_topology_get(
 						bandwidth: 0, // TODO:
 					};
 
-					(usage, limits)
+					(usage, limits, false)
 				} else {
 					tracing::error!(%nomad_node_id, "node not found in nomad response");
 
-					(Stats::default(), Stats::default())
+					(Stats::default(), Stats::default(), true)
 				}
 			}
 			Runtime::Pegboard(pegboard_client_id) => {
 				// Gracefully handle if client usage exists
-				let usage = if let Some(client) = pb_client_usage_res
+				let (usage, missing) = if let Some(client) = pb_client_usage_res
 					.clients
 					.iter()
 					.find(|client| &client.client_id == pegboard_client_id)
 				{
-					Stats {
-						cpu: client.usage.cpu,
-						memory: client.usage.memory,
-						disk: client.usage.disk,
-						bandwidth: 0, // TODO:
-					}
+					(
+						Stats {
+							cpu: client.usage.cpu,
+							memory: client.usage.memory,
+							disk: client.usage.disk,
+							bandwidth: 0, // TODO:
+						},
+						false,
+					)
 				} else {
 					tracing::error!(%pegboard_client_id, "pegboard client not found in response");
 
-					Stats::default()
+					(Stats::default(), true)
 				};
 
 				(
@@ -373,19 +391,20 @@ pub async fn cluster_datacenter_topology_get(
 						server.provider_hardware.as_deref(),
 						default_provider_hardware,
 					)?,
+					missing,
 				)
 			}
 			Runtime::None => {
 				// Gracefully handle if prometheus metrics exist
-				let usage = if let Some(server_metrics) = prometheus_metrics
+				let (usage, missing) = if let Some(server_metrics) = prometheus_metrics
 					.as_ref()
 					.and_then(|x| x.get(&server.server_id))
 				{
-					server_metrics.clone()
+					(server_metrics.clone(), false)
 				} else {
 					tracing::warn!(server_id=%server.server_id, "no prometheus metrics for server");
 
-					Stats::default()
+					(Stats::default(), true)
 				};
 
 				(
@@ -395,6 +414,7 @@ pub async fn cluster_datacenter_topology_get(
 						server.provider_hardware.as_deref(),
 						default_provider_hardware,
 					)?,
+					missing,
 				)
 			}
 		};
@@ -405,6 +425,7 @@ pub async fn cluster_datacenter_topology_get(
 			pool_type: server.pool_type,
 			usage,
 			limits,
+			missing,
 		});
 	}
 

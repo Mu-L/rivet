@@ -22,13 +22,9 @@ use tokio::{
 	sync::mpsc::{channel, Receiver},
 };
 
-use pegboard_config::{Config, FoundationDbAddress};
+use pegboard_config::{Addresses, Config};
 
 pub mod sql;
-
-const MAX_QUERY_RETRIES: usize = 16;
-const QUERY_RETRY: Duration = Duration::from_millis(500);
-const TXN_RETRY: Duration = Duration::from_millis(250);
 
 pub async fn init_dir(config: &Config) -> Result<()> {
 	let data_dir = config.client.data_dir();
@@ -230,31 +226,29 @@ pub async fn init_sqlite_schema(pool: &SqlitePool) -> Result<()> {
 	Ok(())
 }
 
+#[derive(Deserialize)]
+struct ApiResponse {
+	servers: Vec<ApiServer>,
+}
+
+#[derive(Deserialize)]
+struct ApiServer {
+	lan_ip: Option<Ipv4Addr>,
+}
+
 pub async fn init_fdb_config(config: &Config) -> Result<()> {
-	let ips = match &config.client.foundationdb.address {
-		FoundationDbAddress::Dynamic { fetch_endpoint } => {
-			#[derive(Deserialize)]
-			struct Response {
-				servers: Vec<Server>,
-			}
-
-			#[derive(Deserialize)]
-			struct Server {
-				vlan_ip: Option<Ipv4Addr>,
-			}
-
-			reqwest::get(fetch_endpoint.clone())
-				.await?
-				.error_for_status()?
-				.json::<Response>()
-				.await?
-				.servers
-				.into_iter()
-				.filter_map(|server| server.vlan_ip)
-				.map(|vlan_ip| format!("{vlan_ip}:4500"))
-				.collect::<Vec<_>>()
-		}
-		FoundationDbAddress::Static(addresses) => addresses.clone(),
+	let ips = match &config.client.foundationdb.addresses {
+		Addresses::Dynamic { fetch_endpoint } => reqwest::get(fetch_endpoint.clone())
+			.await?
+			.error_for_status()?
+			.json::<ApiResponse>()
+			.await?
+			.servers
+			.into_iter()
+			.filter_map(|server| server.lan_ip)
+			.map(|lan_ip| format!("{lan_ip}:4500"))
+			.collect::<Vec<_>>(),
+		Addresses::Static(addresses) => addresses.clone(),
 	};
 
 	ensure!(!ips.is_empty(), "no fdb clusters found");
@@ -278,48 +272,25 @@ pub async fn init_fdb_config(config: &Config) -> Result<()> {
 	Ok(())
 }
 
-/// Executes queries and explicitly handles retry errors.
-pub async fn query<'a, F, Fut, T>(mut cb: F) -> Result<T>
-where
-	F: FnMut() -> Fut,
-	Fut: std::future::Future<Output = std::result::Result<T, sqlx::Error>> + 'a,
-	T: 'a,
-{
-	let mut i = 0;
+pub async fn fetch_pull_addresses(config: &Config) -> Result<Vec<String>> {
+	let mut addresses = match &*config.client.images.pull_addresses() {
+		Addresses::Dynamic { fetch_endpoint } => reqwest::get(fetch_endpoint.clone())
+			.await?
+			.error_for_status()?
+			.json::<ApiResponse>()
+			.await?
+			.servers
+			.into_iter()
+			.filter_map(|server| server.lan_ip)
+			.map(|vlan_ip| format!("http://{vlan_ip}:8080"))
+			.collect::<Vec<_>>(),
+		Addresses::Static(addresses) => addresses.clone(),
+	};
 
-	loop {
-		match cb().await {
-			std::result::Result::Ok(x) => return Ok(x),
-			std::result::Result::Err(err) => {
-				use sqlx::Error::*;
+	// Always sort the addresses so the list is deterministic
+	addresses.sort();
 
-				if i > MAX_QUERY_RETRIES {
-					bail!("max sql retries: {err:?}");
-				}
-				i += 1;
-
-				match &err {
-					// Retry transaction errors immediately
-					Database(db_err)
-						if db_err
-							.message()
-							.contains("TransactionRetryWithProtoRefreshError") =>
-					{
-						tracing::info!(message=%db_err.message(), "transaction retry");
-						tokio::time::sleep(TXN_RETRY).await;
-					}
-					// Retry internal errors with a backoff
-					Database(_) | Io(_) | Tls(_) | Protocol(_) | PoolTimedOut | PoolClosed
-					| WorkerCrashed => {
-						tracing::info!(?err, "query retry");
-						tokio::time::sleep(QUERY_RETRY).await;
-					}
-					// Throw error
-					_ => return Err(err.into()),
-				}
-			}
-		}
-	}
+	Ok(addresses)
 }
 
 pub fn now() -> i64 {

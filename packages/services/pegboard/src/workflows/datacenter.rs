@@ -54,7 +54,8 @@ pub async fn pegboard_datacenter(ctx: &mut WorkflowCtx, input: &Input) -> Global
 				protocol::Command::SignalActor {
 					actor_id,
 					signal,
-					persist_state,
+					persist_storage,
+					ignore_future_state,
 				} => {
 					let client_id = ctx.activity(GetClientForActorInput { actor_id }).await?;
 
@@ -63,7 +64,8 @@ pub async fn pegboard_datacenter(ctx: &mut WorkflowCtx, input: &Input) -> Global
 						ctx.signal(protocol::Command::SignalActor {
 							actor_id,
 							signal,
-							persist_state,
+							persist_storage,
+							ignore_future_state,
 						})
 						.tag("client_id", client_id)
 						.send()
@@ -124,6 +126,9 @@ async fn allocate_actor(
 		"allocating actor"
 	);
 
+	// Even though isolates autoscale based on CPU, we allocate machines based on reservation in
+	// balance proactively. Otherwise, we'd end up with bad scaling with retroactively choosing
+	// nodes based on CPU load since actors will show the CPU load after a delay.
 	let client_id = sql_fetch_optional!(
 		[ctx, (Uuid,)]
 		"
@@ -169,9 +174,26 @@ async fn allocate_actor(
 		SELECT $3, client_id, $4, $5
 		FROM available_clients
 		WHERE
-			allocated_cpu + $6 <= available_cpu AND
-			allocated_memory + $7 <= available_memory
-		ORDER BY allocated_cpu DESC, allocated_memory DESC
+			-- Containers (0): ensure node has available resources
+			-- Isolates (1): don't limit resources since they scale on CPU
+			CASE WHEN $8 = 0
+				THEN (
+					allocated_cpu + $6 <= available_cpu AND
+					allocated_memory + $7 <= available_memory
+				)
+				ELSE TRUE
+			END
+		ORDER BY
+			-- Container (0): binpack to the most-populated node to maximize density
+			-- Isolate (1): allocate to the least-populated node since we autoscale on CPU
+			CASE WHEN $8 = 0
+				THEN allocated_cpu
+				ELSE -allocated_cpu
+			END DESC,
+			CASE WHEN $8 = 0
+				THEN allocated_memory
+				ELSE -allocated_memory
+			END DESC
 		LIMIT 1
 		RETURNING client_id
 		",

@@ -11,8 +11,8 @@ use crate::{
 	workflow::Workflow,
 };
 
-mod pg_nats;
-pub use pg_nats::DatabasePgNats;
+mod crdb_nats;
+pub use crdb_nats::DatabaseCrdbNats;
 
 pub type DatabaseHandle = Arc<dyn Database + Sync>;
 
@@ -37,7 +37,10 @@ pub trait Database: Send {
 		workflow_name: &str,
 		tags: Option<&serde_json::Value>,
 		input: &serde_json::value::RawValue,
-	) -> WorkflowResult<()>;
+		unique: bool,
+	) -> WorkflowResult<Uuid>;
+
+	/// Retrieves a workflow with the given ID.
 	async fn get_workflow(&self, id: Uuid) -> WorkflowResult<Option<WorkflowData>>;
 
 	/// Pulls workflows for processing by the worker. Will only pull workflows with names matching the filter.
@@ -155,7 +158,8 @@ pub trait Database: Send {
 		tags: Option<&serde_json::Value>,
 		input: &serde_json::value::RawValue,
 		loop_location: Option<&Location>,
-	) -> WorkflowResult<()>;
+		unique: bool,
+	) -> WorkflowResult<Uuid>;
 
 	/// Writes a message send event to history.
 	async fn commit_workflow_message_send_event(
@@ -222,6 +226,7 @@ pub trait Database: Send {
 		&self,
 		from_workflow_id: Uuid,
 		location: &Location,
+		version: usize,
 		loop_location: Option<&Location>,
 	) -> WorkflowResult<()>;
 }

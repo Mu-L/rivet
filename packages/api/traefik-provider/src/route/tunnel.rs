@@ -49,13 +49,15 @@ pub async fn build_ip_allowlist(
 				..Default::default()
 			},
 			include_destroyed: false,
+			exclude_draining: false,
+			exclude_no_vlan: false,
 		})
 		.await?;
 
 	let public_ips = servers_res
 		.servers
 		.iter()
-		.filter_map(|server| server.public_ip)
+		.filter_map(|server| server.wan_ip)
 		.map(|ip| ip.to_string())
 		.collect::<Vec<_>>();
 

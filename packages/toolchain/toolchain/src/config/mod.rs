@@ -6,8 +6,8 @@ use std::{
 };
 
 use anyhow::*;
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 pub mod build;
 
@@ -57,7 +57,7 @@ impl Deref for Config {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Root {
-	pub builds: Vec<Build>,
+	pub builds: HashMap<String, Build>,
 	pub unstable: Option<Unstable>,
 }
 
@@ -71,9 +71,32 @@ impl Root {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct Build {
-	pub tags: HashMap<String, String>,
+	pub tags: Option<HashMap<String, String>>,
+	pub access: BuildAccess,
 	#[serde(flatten)]
 	pub runtime: build::Runtime,
+}
+
+impl Build {
+	/// Returns the tags including the name tag.
+	///
+	/// This does not include the current, version, and access tags.
+	pub fn full_tags<'a>(&'a self, name: &'a str) -> HashMap<&'a str, &'a str> {
+		let mut tags = HashMap::from([(crate::build::tags::NAME, name)]);
+		if let Some(self_tags) = &self.tags {
+			tags.extend(self_tags.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+		}
+		tags
+	}
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema, strum::AsRefStr)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildAccess {
+	#[strum(serialize = "public")]
+	Public,
+	#[strum(serialize = "private")]
+	Private,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -86,12 +109,13 @@ pub struct Unstable {
 #[derive(Default, Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ManagerUnstable {
-	pub enable: Option<bool>
+	pub enable: Option<bool>,
+	#[serde(flatten)]
+	pub js_unstable: build::javascript::Unstable,
 }
 
 impl ManagerUnstable {
 	pub fn enable(&self) -> bool {
 		self.enable.unwrap_or(true)
 	}
-
 }

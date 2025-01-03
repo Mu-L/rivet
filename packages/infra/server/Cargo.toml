@@ -28,7 +28,7 @@ serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
 serde_yaml = "0.9.34"
 strum = "0.26.3"
-tabled = "0.16.0"
+tabled = "0.17.0"
 tempfile = "3.13.0"
 thiserror = "1.0.64"
 tokio = { version = "1.40", features = ["full", "tracing"] }
@@ -43,8 +43,8 @@ cluster-metrics-publish.workspace = true
 job-gc.workspace = true
 linode-gc.workspace = true
 load-test-api-cloud.workspace = true
-load-test-mm.workspace = true
 load-test-mm-sustain.workspace = true
+load-test-mm.workspace = true
 load-test-sqlx.workspace = true
 load-test-watch-requests.workspace = true
 mm-gc.workspace = true
@@ -52,6 +52,7 @@ monolith-worker.workspace = true
 monolith-workflow-worker.workspace = true
 nomad-monitor.workspace = true
 pegboard-gc.workspace = true
+pegboard-metrics-publish.workspace = true
 pegboard-ws.workspace = true
 workflow-gc.workspace = true
 workflow-metrics-publish.workspace = true
@@ -79,6 +80,5 @@ cloud-default-create.workspace = true
 
 [dependencies.sqlx]
 workspace = true
-default-features = false
 features = ["runtime-tokio", "postgres"]
 

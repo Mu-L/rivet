@@ -1,0 +1,156 @@
+import imgBuilds from "./images/setup/builds.png";
+import imgActors from "./images/setup/actors.png";
+
+# Initial Setup
+
+This guide will walk you through:
+
+1. Initializing a new project
+2. Deploying a Rivet Actor
+3. Setting up the Rivet client SDK
+
+If you get stuck at any point, you can read the [troubleshooting guide](/docs/troubleshooting), ask a
+question on [Discord](https://rivet.gg/discord)/[GitHub
+Discussion](https://github.com/orgs/rivet-gg/discussions), or file a bug report on [GitHub
+Issues](https://github.com/rivet-gg/rivet/issues).
+
+<Steps>
+
+<Step title="Install CLI">
+
+The easiest way to get start with Rivet is to use the CLI. Run this command to install Rivet on your system:
+
+<Tabs>
+
+<Tab title="macOS & Linux & WSL">
+
+```sh
+curl -fsSL https://releases.rivet.gg/rivet/latest/install.sh | sh
+```
+
+</Tab>
+
+<Tab title="Windows (cmd)">
+
+```ps1
+powershell -Command "iwr https://releases.rivet.gg/rivet/latest/install.ps1 -useb | iex"
+```
+
+</Tab>
+
+<Tab title="Windows (PowerShell)">
+
+```ps1
+iwr https://releases.rivet.gg/rivet/latest/install.ps1 -useb | iex
+```
+
+</Tab>
+
+<Tab title="Build from source">
+
+```sh
+git clone https://github.com/rivet-gg/rivet
+cargo build --bin rivet
+```
+
+The executable will be available at _target/debug/rivet_.
+
+</Tab>
+
+</Tabs>
+
+</Step>
+
+<Step title="Initialize project & login to Rivet">
+
+Once you've installed the Rivet CLI, run this command in your project root to create a new project:
+
+```sh
+rivet init
+```
+
+Follow the instructions to initialize your project & login to Rivet.
+
+</Step>
+
+<Step title="Deploy project">
+
+After initializing your project, now you will deploy your actor to Rivet's servers.
+
+Run the following command, and replace `my-app` with the name of your project:
+
+```sh
+cd my-app
+rivet deploy
+```
+
+_If [self-hosting](/docs/self-hosting), this will prompt you to input a custom API address._
+
+Once complete, visit the [Rivet Hub](https://hub.rivet.gg) to see the build you uploaded:
+
+<Image src={imgBuilds} alt="Build list" />
+
+</Step>
+
+<Step title="Create a test actor">
+
+Now that you've uploaded a build to Rivet, we need to create an actor using that build.
+
+To test the actor can be created & connected to, run:
+
+```sh
+rivet deno run -A counter_test.ts
+```
+
+Once complete, visit the [Rivet Hub](https://hub.rivet.gg) to see the actor you created:
+
+<Image src={imgActors} alt="Actor list" />
+
+</Step>
+
+<Step title="Setup client SDK">
+
+Now that you have an actor deployed, integrate the Rivet client SDK with your actor.
+
+Install the package for your language:
+
+- <a href="https://jsr.io/@rivet-gg/actor-client" target="_blank">JavaScript</a>
+- <a href="https://jsr.io/@rivet-gg/actor-client" target="_blank">TypeScript</a>
+
+Once installed, we need to find the endpoint that your actors connect to. Run this command in your project:
+
+```sh
+rivet manager endpoint
+```
+
+Use this code to create & connect to the actor. Replace `/* CONNECTION ADDRESS */` with the value from the previous step.
+
+```typescript
+import { Client } from '@rivet-gg/actor-client';
+const client = new Client(/* CONNECTION ADDRESS */);
+
+const counter = await client.get({ name: 'counter' }); // Get or create a `counter` actor
+const newCount = await counter.increment(5); // Call the method `increment` on the `counter` actor
+console.log('New count', newCount);
+```
+
+Visit the [Rivet Hub](https://hub.rivet.gg) to see the actor you created.
+
+</Step>
+
+<Step title="Setup your editor/IDE (optional)">
+
+Rivet actors run on the [Deno](https://deno.com/) runtime. Read their guide on how to configure your IDE [here](https://docs.deno.com/runtime/getting_started/setup_your_environment/#using-an-editoride).
+
+</Step>
+
+</Steps>
+
+## Next steps
+
+<CardGroup>
+  <Card title='Create & Manage Actors' href='/docs/manage' />
+  <Card title='RPC' href='/docs/rpc' />
+  <Card title='State' href='/docs/events' />
+  <Card title='Examples' href='/examples' />
+</CardGroup>

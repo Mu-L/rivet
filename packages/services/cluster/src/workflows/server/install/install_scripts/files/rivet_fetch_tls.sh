@@ -14,7 +14,8 @@ CERT_ID="job"
 STUB="/etc/__NAME__/tls/$CERT_ID"
 
 
-# Retry script every 5 seconds
+# Retry script every 5 seconds until success
+echo 'Fetching rivet tls'
 while true; do
   response=$(
     curl -f \
@@ -75,10 +76,10 @@ OnCalendar=*:0
 RandomizedDelaySec=60
 Unit=rivet_fetch_tls.service
 
-# High CPU priority
-CPUSchedulingPriority=90
 # Real time service
 CPUSchedulingPolicy=fifo
+# High CPU priority
+CPUSchedulingPriority=90
 # Prevent killing from system OOM
 OOMScoreAdjust=-800
 

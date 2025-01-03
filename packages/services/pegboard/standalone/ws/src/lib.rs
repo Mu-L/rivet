@@ -15,7 +15,13 @@ use tokio::{
 	net::{TcpListener, TcpStream},
 	sync::{Mutex, RwLock},
 };
-use tokio_tungstenite::{tungstenite::protocol::Message, WebSocketStream};
+use tokio_tungstenite::{
+	tungstenite::protocol::{
+		frame::{coding::CloseCode, CloseFrame},
+		Message,
+	},
+	WebSocketStream,
+};
 
 use pegboard::protocol;
 
@@ -50,16 +56,6 @@ pub async fn run_from_env(
 
 	let conns: Arc<RwLock<Connections>> = Arc::new(RwLock::new(HashMap::new()));
 
-	tokio::try_join!(
-		socket_thread(&ctx, conns.clone()),
-		msg_thread(&ctx, conns.clone()),
-		update_ping_thread(&ctx, conns.clone()),
-	)?;
-
-	Ok(())
-}
-
-async fn socket_thread(ctx: &StandaloneCtx, conns: Arc<RwLock<Connections>>) -> GlobalResult<()> {
 	let host = ctx.config().server()?.rivet.pegboard.host();
 	let port = ctx.config().server()?.rivet.pegboard.port();
 	let addr = SocketAddr::from((host, port));
@@ -67,6 +63,26 @@ async fn socket_thread(ctx: &StandaloneCtx, conns: Arc<RwLock<Connections>>) -> 
 	let listener = TcpListener::bind(addr).await?;
 	tracing::info!(?port, ?port, "pegboard ws server listening");
 
+	// None of these should ever exit
+	//
+	// If these do exit, then the `handle_connection` task will run indefinitely and never
+	// send/receive anything to clients. Client workflows will then expire because of their ping,
+	// their workflow will complete, and clients will be unusable unless they reconnect.
+	tokio::join!(
+		socket_thread(&ctx, conns.clone(), listener),
+		msg_thread(&ctx, conns.clone()),
+		update_ping_thread(&ctx, conns.clone()),
+	);
+
+	Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+async fn socket_thread(
+	ctx: &StandaloneCtx,
+	conns: Arc<RwLock<Connections>>,
+	listener: TcpListener,
+) {
 	loop {
 		match listener.accept().await {
 			Ok((stream, addr)) => handle_connection(ctx, conns.clone(), stream, addr).await,
@@ -75,6 +91,7 @@ async fn socket_thread(ctx: &StandaloneCtx, conns: Arc<RwLock<Connections>>) -> 
 	}
 }
 
+#[tracing::instrument(skip_all)]
 async fn handle_connection(
 	ctx: &StandaloneCtx,
 	conns: Arc<RwLock<Connections>>,
@@ -101,13 +118,24 @@ async fn handle_connection(
 		// Clean up
 		let conn = conns.write().await.remove(&url_data.client_id);
 		if let Some(conn) = conn {
-			if let Err(err) = conn.tx.lock().await.send(Message::Close(None)).await {
+			let close_frame = CloseFrame {
+				code: CloseCode::Normal,
+				reason: "handle_connection_inner event loop closed".into(),
+			};
+			if let Err(err) = conn
+				.tx
+				.lock()
+				.await
+				.send(Message::Close(Some(close_frame)))
+				.await
+			{
 				tracing::error!(?addr, "failed closing socket: {err}");
 			}
 		}
 	});
 }
 
+#[tracing::instrument(skip_all)]
 async fn setup_connection(
 	raw_stream: TcpStream,
 	addr: SocketAddr,
@@ -133,6 +161,7 @@ async fn setup_connection(
 	Ok((ws_stream, url_data))
 }
 
+#[tracing::instrument(skip_all)]
 async fn handle_connection_inner(
 	ctx: &StandaloneCtx,
 	conns: Arc<RwLock<Connections>>,
@@ -161,7 +190,16 @@ async fn handle_connection_inner(
 				"client already connected, closing old connection"
 			);
 
-			old_conn.tx.lock().await.send(Message::Close(None)).await?;
+			let close_frame = CloseFrame {
+				code: CloseCode::Normal,
+				reason: "client already connected, closing old connection".into(),
+			};
+			old_conn
+				.tx
+				.lock()
+				.await
+				.send(Message::Close(Some(close_frame)))
+				.await?;
 		}
 	}
 
@@ -220,42 +258,24 @@ async fn handle_connection_inner(
 	GlobalResult::Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn upsert_client(
 	ctx: &StandaloneCtx,
 	client_id: Uuid,
 	datacenter_id: Uuid,
 	flavor: protocol::ClientFlavor,
 ) -> GlobalResult<()> {
-	// Inserting before creating the workflow prevents a race condition with using select + insert instead
-	let (exists, deleted) = sql_fetch_one!(
-		[ctx, (bool, bool)]
+	sql_execute!(
+		[ctx]
 		"
-		WITH
-			select_exists AS (
-				SELECT 1
-				FROM db_pegboard.clients
-				WHERE client_id = $1
-			),
-			select_deleted AS (
-				SELECT 1
-				FROM db_pegboard.clients
-				WHERE
-					client_id = $1 AND
-					delete_ts IS NOT NULL
-			),
-			insert_client AS (
-				INSERT INTO db_pegboard.clients (
-					client_id, datacenter_id, flavor, create_ts, last_ping_ts
-				)
-				VALUES ($1, $2, $3, $4, $4)
-				ON CONFLICT (client_id)
-					DO UPDATE
-					SET delete_ts = NULL
-				RETURNING 1
-			)
-		SELECT
-			EXISTS(SELECT 1 FROM select_exists) AS exists,
-			EXISTS(SELECT 1 FROM select_deleted) AS deleted
+		INSERT INTO db_pegboard.clients (
+			client_id, datacenter_id, flavor, create_ts, last_ping_ts
+		)
+		VALUES ($1, $2, $3, $4, $4)
+		ON CONFLICT (client_id)
+			DO UPDATE
+			SET delete_ts = NULL
+		RETURNING 1
 		",
 		client_id,
 		datacenter_id,
@@ -264,25 +284,35 @@ async fn upsert_client(
 	)
 	.await?;
 
-	if deleted {
-		tracing::warn!(?client_id, "client was previously deleted");
-	}
-
-	if exists == deleted {
-		tracing::info!(?client_id, ?datacenter_id, ?flavor, "new client");
-
-		// Spawn a new client workflow
-		ctx.workflow(pegboard::workflows::client::Input { client_id })
-			.tag("client_id", client_id)
-			.dispatch()
-			.await?;
-	}
+	// Spawn a new client workflow if one doesn't already exist
+	ctx.workflow(pegboard::workflows::client::Input { client_id })
+		.tag("client_id", client_id)
+		.unique()
+		.dispatch()
+		.await?;
 
 	Ok(())
 }
 
+#[tracing::instrument(skip_all)]
+async fn update_ping_thread(ctx: &StandaloneCtx, conns: Arc<RwLock<Connections>>) {
+	loop {
+		match update_ping_thread_inner(ctx, conns.clone()).await {
+			Ok(_) => {
+				tracing::warn!("update ping thread thread exited early");
+			}
+			Err(err) => {
+				tracing::error!(?err, "update ping thread error");
+			}
+		}
+
+		tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+	}
+}
+
 /// Updates the ping of all clients requesting a ping update at once.
-async fn update_ping_thread(
+#[tracing::instrument(skip_all)]
+async fn update_ping_thread_inner(
 	ctx: &StandaloneCtx,
 	conns: Arc<RwLock<Connections>>,
 ) -> GlobalResult<()> {
@@ -321,7 +351,27 @@ async fn update_ping_thread(
 	}
 }
 
-async fn msg_thread(ctx: &StandaloneCtx, conns: Arc<RwLock<Connections>>) -> GlobalResult<()> {
+#[tracing::instrument(skip_all)]
+async fn msg_thread(ctx: &StandaloneCtx, conns: Arc<RwLock<Connections>>) {
+	loop {
+		match msg_thread_inner(ctx, conns.clone()).await {
+			Ok(_) => {
+				tracing::warn!("msg thread exited early");
+			}
+			Err(err) => {
+				tracing::error!(?err, "msg thread error");
+			}
+		}
+
+		tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+	}
+}
+
+#[tracing::instrument(skip_all)]
+async fn msg_thread_inner(
+	ctx: &StandaloneCtx,
+	conns: Arc<RwLock<Connections>>,
+) -> GlobalResult<()> {
 	// Listen for commands from client workflows
 	let mut sub = ctx
 		.subscribe::<pegboard::workflows::client::ToWs>(&json!({}))
@@ -358,7 +408,13 @@ async fn msg_thread(ctx: &StandaloneCtx, conns: Arc<RwLock<Connections>>) -> Glo
 
 					// Close socket
 					if let Some(conn) = conns.get(&msg.client_id) {
-						conn.tx.lock().await.send(Message::Close(None)).await?;
+						tracing::info!(client_id = ?msg.client_id, "received close ws event, closing socket");
+
+						let close_frame = CloseFrame {
+							code: CloseCode::Normal,
+							reason: "received close ws event".into(),
+						};
+						conn.tx.lock().await.send(Message::Close(Some(close_frame))).await?;
 					} else {
 						tracing::debug!(
 							client_id=?msg.client_id,

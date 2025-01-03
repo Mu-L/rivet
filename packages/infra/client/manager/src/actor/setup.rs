@@ -1,21 +1,26 @@
+use std::{
+	collections::HashMap,
+	hash::{DefaultHasher, Hasher},
+	path::{Path, PathBuf},
+	process::Stdio,
+	result::Result::{Err, Ok},
+};
+
 use anyhow::*;
+use futures_util::Stream;
 use futures_util::StreamExt;
 use indoc::indoc;
 use pegboard::protocol;
 use pegboard_config::isolate_runner::actor as actor_config;
 use rand::Rng;
+use rand::{prelude::SliceRandom, SeedableRng};
 use serde_json::json;
-use std::{
-	collections::HashMap,
-	path::{Path, PathBuf},
-	process::Stdio,
-	result::Result::{Err, Ok},
-};
 use tokio::{
 	fs::{self, File},
 	io::{AsyncReadExt, AsyncWriteExt},
 	process::Command,
 };
+use url::Url;
 use uuid::Uuid;
 
 use super::{oci_config, Actor};
@@ -66,16 +71,61 @@ impl Actor {
 		Ok(())
 	}
 
+	/// Deterministically shuffles a list of available ATS URL's to download the image from based on the image
+	// ID and attempts to download from each URL until success.
+	async fn fetch_image_stream(
+		&self,
+		ctx: &Ctx,
+	) -> Result<impl Stream<Item = reqwest::Result<bytes::Bytes>>> {
+		// Get hash from image id
+		let mut hasher = DefaultHasher::new();
+		hasher.write(self.config.image.id.as_bytes());
+		let hash = hasher.finish();
+
+		let mut rng = rand_chacha::ChaCha12Rng::seed_from_u64(hash);
+
+		// Shuffle based on hash
+		let mut addresses = ctx
+			.pull_addresses
+			.iter()
+			.map(|addr| {
+				Ok(
+					Url::parse(&format!("{addr}{}", self.config.image.artifact_url_stub))
+						.context("failed to build artifact url")?
+						.to_string(),
+				)
+			})
+			.collect::<Result<Vec<_>>>()?;
+		addresses.shuffle(&mut rng);
+
+		// Add fallback url to the end if one is set
+		if let Some(fallback_artifact_url) = &self.config.image.fallback_artifact_url {
+			addresses.push(fallback_artifact_url.clone());
+		}
+
+		let mut iter = addresses.into_iter();
+		while let Some(artifact_url) = iter.next() {
+			match reqwest::get(&artifact_url)
+				.await
+				.and_then(|res| res.error_for_status())
+			{
+				Ok(res) => return Ok(res.bytes_stream()),
+				Err(err) => {
+					tracing::warn!(actor_id=?self.actor_id, "failed to start download from {artifact_url}: {err}");
+				}
+			}
+		}
+
+		bail!("artifact url could not be resolved");
+	}
+
 	pub async fn download_image(&self, ctx: &Ctx) -> Result<()> {
 		tracing::info!(actor_id=?self.actor_id, "downloading artifact");
 
 		let actor_path = ctx.actor_path(self.actor_id);
 		let fs_path = actor_path.join("fs");
 
-		let mut stream = reqwest::get(&self.config.image.artifact_url)
-			.await?
-			.error_for_status()?
-			.bytes_stream();
+		let mut stream = self.fetch_image_stream(ctx).await?;
 
 		match self.config.image.kind {
 			protocol::ImageKind::DockerImage => {
@@ -544,7 +594,7 @@ impl Actor {
 							source: host_port,
 							// When no target port was selected, default to randomly selected host port
 							target: port.target.unwrap_or(host_port),
-							ip: ctx.config().network.bind_ip,
+							lan_hostname: ctx.config().network.lan_hostname.clone(),
 							protocol: port.protocol,
 						},
 					)
@@ -560,7 +610,7 @@ impl Actor {
 								source: host_port,
 								// When no target port was selected, default to randomly selected host port
 								target: port.target.unwrap_or(host_port),
-								ip: ctx.config().network.bind_ip,
+								lan_hostname: ctx.config().network.lan_hostname.clone(),
 								protocol: port.protocol,
 							},
 						)
@@ -571,11 +621,15 @@ impl Actor {
 		Ok(proxied_ports)
 	}
 
+	// This function is meant to run gracefully-handled fallible steps to clean up every part of the setup
+	// process. It returns a result for errors that should not be gracefully handled and should shut down the
+	// program if thrown.
 	#[tracing::instrument(skip_all)]
-	pub async fn cleanup_setup(&self, ctx: &Ctx) -> Result<()> {
+	pub async fn cleanup_setup(&self, ctx: &Ctx) {
 		let actor_path = ctx.actor_path(self.actor_id);
 		let netns_path = self.netns_path();
 
+		// Clean up fs mount
 		if ctx.config().runner.use_mounts() {
 			match Command::new("umount")
 				.arg("-dl")
@@ -586,18 +640,22 @@ impl Actor {
 				Result::Ok(cmd_out) => {
 					if !cmd_out.status.success() {
 						tracing::error!(
-							stdout=%std::str::from_utf8(&cmd_out.stdout)?,
-							stderr=%std::str::from_utf8(&cmd_out.stderr)?,
+							actor_id=?self.actor_id,
+							stdout=%std::str::from_utf8(&cmd_out.stdout).unwrap_or("<failed to parse stdout>"),
+							stderr=%std::str::from_utf8(&cmd_out.stderr).unwrap_or("<failed to parse stderr>"),
 							"failed `umount` command",
 						);
 					}
 				}
-				Err(err) => tracing::error!(?err, "failed to run `umount` command"),
+				Err(err) => {
+					tracing::error!(actor_id=?self.actor_id, ?err, "failed to run `umount` command")
+				}
 			}
 		}
 
 		match self.config.image.kind {
 			protocol::ImageKind::DockerImage | protocol::ImageKind::OciBundle => {
+				// Clean up runc
 				match Command::new("runc")
 					.arg("delete")
 					.arg("--force")
@@ -608,13 +666,16 @@ impl Actor {
 					Result::Ok(cmd_out) => {
 						if !cmd_out.status.success() {
 							tracing::error!(
-								stdout=%std::str::from_utf8(&cmd_out.stdout)?,
-								stderr=%std::str::from_utf8(&cmd_out.stderr)?,
+								actor_id=?self.actor_id,
+								stdout=%std::str::from_utf8(&cmd_out.stdout).unwrap_or("<failed to parse stdout>"),
+								stderr=%std::str::from_utf8(&cmd_out.stderr).unwrap_or("<failed to parse stderr>"),
 								"failed `runc` delete command",
 							);
 						}
 					}
-					Err(err) => tracing::error!(?err, "failed to run `runc` command"),
+					Err(err) => {
+						tracing::error!(actor_id=?self.actor_id, ?err, "failed to run `runc` command")
+					}
 				}
 
 				if let protocol::NetworkMode::Bridge = self.config.network_mode {
@@ -634,20 +695,24 @@ impl Actor {
 								Result::Ok(cmd_out) => {
 									if !cmd_out.status.success() {
 										tracing::error!(
-											stdout=%std::str::from_utf8(&cmd_out.stdout)?,
-											stderr=%std::str::from_utf8(&cmd_out.stderr)?,
+											actor_id=?self.actor_id,
+											stdout=%std::str::from_utf8(&cmd_out.stdout).unwrap_or("<failed to parse stdout>"),
+											stderr=%std::str::from_utf8(&cmd_out.stderr).unwrap_or("<failed to parse stderr>"),
 											"failed `cnitool del` command",
 										);
 									}
 								}
 								Err(err) => {
-									tracing::error!(?err, "failed to run `cnitool` command")
+									tracing::error!(actor_id=?self.actor_id, ?err, "failed to run `cnitool` command")
 								}
 							}
 						}
-						Err(err) => tracing::error!(?err, "failed to read `cni-cap-args.json`"),
+						Err(err) => {
+							tracing::error!(actor_id=?self.actor_id, ?err, "failed to read `cni-cap-args.json`")
+						}
 					}
 
+					// Clean up network
 					match Command::new("ip")
 						.arg("netns")
 						.arg("del")
@@ -658,20 +723,27 @@ impl Actor {
 						Result::Ok(cmd_out) => {
 							if !cmd_out.status.success() {
 								tracing::error!(
-									stdout=%std::str::from_utf8(&cmd_out.stdout)?,
-									stderr=%std::str::from_utf8(&cmd_out.stderr)?,
+									actor_id=?self.actor_id,
+									stdout=%std::str::from_utf8(&cmd_out.stdout).unwrap_or("<failed to parse stdout>"),
+									stderr=%std::str::from_utf8(&cmd_out.stderr).unwrap_or("<failed to parse stderr>"),
 									"failed `ip netns` command",
 								);
 							}
 						}
-						Err(err) => tracing::error!(?err, "failed to run `ip` command"),
+						Err(err) => {
+							tracing::error!(actor_id=?self.actor_id, ?err, "failed to run `ip` command")
+						}
 					}
 				}
 			}
 			protocol::ImageKind::JavaScript => {}
 		}
 
-		Ok(())
+		// Delete entire actor dir. Note that for actors using KV storage, it is persisted elsewhere and will
+		// not be deleted by this (see `persist_storage` in the runner protocol).
+		if let Err(err) = tokio::fs::remove_dir_all(&actor_path).await {
+			tracing::error!(actor_id=?self.actor_id, ?err, "failed to delete actor dir");
+		}
 	}
 
 	// Path to the created namespace
@@ -736,7 +808,7 @@ async fn bind_ports_inner(
 	let udp_offset = rand::thread_rng().gen_range(0..truncated_max);
 
 	// Selects available TCP and UDP ports
-	let rows = utils::query(|| async {
+	let rows = utils::sql::query(|| async {
 		sqlx::query_as::<_, (i64, i64)>(indoc!(
 			"
 			INSERT INTO actor_ports (actor_id, port, protocol)

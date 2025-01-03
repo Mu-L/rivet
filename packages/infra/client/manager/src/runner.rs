@@ -22,9 +22,15 @@ use nix::{
 };
 use pegboard_config::runner_protocol;
 use tokio::{fs, net::TcpStream, sync::Mutex};
-use tokio_tungstenite::{tungstenite::protocol::Message, WebSocketStream};
+use tokio_tungstenite::{
+	tungstenite::protocol::{
+		frame::{coding::CloseCode, CloseFrame},
+		Message,
+	},
+	WebSocketStream,
+};
 
-use crate::utils;
+use crate::{metrics, utils};
 
 /// How often to check that a PID is still running when observing actor state.
 const PID_POLL_INTERVAL: Duration = Duration::from_millis(1000);
@@ -55,54 +61,74 @@ impl Handle {
 		}
 	}
 
-	pub async fn attach_socket(&self, ws_stream: WebSocketStream<TcpStream>) -> Result<()> {
+	pub async fn attach_socket(&self, mut ws_stream: WebSocketStream<TcpStream>) -> Result<()> {
 		match &self.comms {
 			Comms::Basic => bail!("attempt to attach socket to basic runner"),
 			Comms::Socket(tx) => {
+				tracing::info!(pid=?self.pid, "attaching socket");
+
 				let mut guard = tx.lock().await;
 
-				if guard.is_some() {
-					tracing::warn!(pid=?self.pid, "runner received another socket");
-				}
+				if guard.is_none() {
+					let (ws_tx, mut ws_rx) = ws_stream.split();
 
-				let (ws_tx, mut ws_rx) = ws_stream.split();
+					*guard = Some(ws_tx);
 
-				*guard = Some(ws_tx);
+					// Spawn a new thread to handle incoming messages
+					let self2 = self.clone();
+					tokio::task::spawn(async move {
+						let kill = loop {
+							match tokio::time::timeout(PING_TIMEOUT, ws_rx.next()).await {
+								Ok(msg) => match msg {
+									Some(Ok(Message::Ping(_))) => {}
+									Some(Ok(Message::Close(_))) | None => {
+										tracing::debug!(pid=?self2.pid, "runner socket closed");
+										break false;
+									}
+									Some(Ok(msg)) => {
+										tracing::warn!(pid=?self2.pid, ?msg, "unexpected message in runner socket")
+									}
+									Some(Err(err)) => {
+										tracing::error!(pid=?self2.pid, ?err, "runner socket error");
+										break true;
+									}
+								},
+								Err(_) => {
+									tracing::error!(pid=?self2.pid, "socket timed out, killing runner");
 
-				// Spawn a new thread to handle incoming messages
-				let self2 = self.clone();
-				tokio::task::spawn(async move {
-					let kill = loop {
-						match tokio::time::timeout(PING_TIMEOUT, ws_rx.next()).await {
-							Ok(msg) => match msg {
-								Some(Ok(Message::Ping(_))) => {}
-								Some(Ok(Message::Close(_))) | None => {
-									tracing::debug!(pid=?self2.pid, "runner socket closed");
-									break false;
-								}
-								Some(Ok(msg)) => {
-									tracing::warn!(pid=?self2.pid, ?msg, "unexpected message in runner socket")
-								}
-								Some(Err(err)) => {
-									tracing::error!(pid=?self2.pid, ?err, "runner socket error");
 									break true;
 								}
-							},
-							Err(_) => {
-								tracing::error!(pid=?self2.pid, "socket timed out, killing runner");
+							}
+						};
 
-								break true;
+						if kill {
+							if let Err(err) = self2.signal(Signal::SIGKILL) {
+								// TODO: This should hard error the manager?
+								tracing::error!(pid=?self2.pid, %err, "failed to kill runner");
 							}
 						}
-					};
+					});
 
-					if kill {
-						if let Err(err) = self2.signal(Signal::SIGKILL) {
-							// TODO: This should hard error the manager?
-							tracing::error!(pid=?self2.pid, %err, "failed to kill runner");
-						}
-					}
-				});
+					tracing::info!(pid=?self.pid, "socket attached");
+				} else {
+					tracing::warn!(pid=?self.pid, "runner received another socket, terminating new one");
+
+					metrics::DUPLICATE_RUNNER
+						.with_label_values(&[&self.pid.to_string()])
+						.inc();
+
+					ws_stream
+						.send(Message::Binary(serde_json::to_vec(
+							&runner_protocol::ToRunner::Terminate,
+						)?))
+						.await?;
+
+					let close_frame = CloseFrame {
+						code: CloseCode::Error,
+						reason: "unknown runner".into(),
+					};
+					ws_stream.send(Message::Close(Some(close_frame))).await?;
+				}
 			}
 		}
 
@@ -111,9 +137,9 @@ impl Handle {
 
 	pub async fn send(&self, packet: &runner_protocol::ToRunner) -> Result<()> {
 		match &self.comms {
-			Comms::Basic => bail!("attempt to send socket message to basic runner"),
+			Comms::Basic => bail!("cannot send socket message to basic runner"),
 			Comms::Socket(socket) => {
-				// Wait for socket to connect
+				// Wait for socket to connect in a retry loop
 				let mut attempts = 0;
 				let mut guard = loop {
 					{
@@ -123,9 +149,16 @@ impl Handle {
 						}
 					}
 
+					if attempts == 0 {
+						tracing::warn!(pid=?self.pid, "socket not yet attached, can't send message. retrying");
+					}
+
 					attempts += 1;
 					if attempts > 15 {
-						bail!("timed out waiting for runner socket to connect");
+						bail!(
+							"timed out waiting for runner socket (pid {}) to attach",
+							self.pid
+						);
 					}
 
 					tokio::time::sleep(std::time::Duration::from_millis(125)).await;

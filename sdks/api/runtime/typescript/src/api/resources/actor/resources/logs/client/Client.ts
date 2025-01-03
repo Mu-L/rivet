@@ -4,15 +4,15 @@
 
 import * as environments from "../../../../../../environments";
 import * as core from "../../../../../../core";
-import * as RivetClient from "../../../../../index";
+import * as Rivet from "../../../../../index";
 import urlJoin from "url-join";
 import * as serializers from "../../../../../../serialization/index";
 import * as errors from "../../../../../../errors/index";
 
 export declare namespace Logs {
     interface Options {
-        environment?: core.Supplier<environments.RivetClientEnvironment | string>;
-        token: core.Supplier<core.BearerToken>;
+        environment?: core.Supplier<environments.RivetEnvironment | string>;
+        token?: core.Supplier<core.BearerToken | undefined>;
         fetcher?: core.FetchFunction;
     }
 
@@ -23,25 +23,27 @@ export declare namespace Logs {
         maxRetries?: number;
         /** A hook to abort the request. */
         abortSignal?: AbortSignal;
+        /** Additional headers to include in the request. */
+        headers?: Record<string, string>;
     }
 }
 
 export class Logs {
-    constructor(protected readonly _options: Logs.Options) {}
+    constructor(protected readonly _options: Logs.Options = {}) {}
 
     /**
      * Returns the logs for a given actor.
      *
      * @param {string} actor
-     * @param {RivetClient.actor.GetActorLogsRequestQuery} request
+     * @param {Rivet.actor.GetActorLogsRequestQuery} request
      * @param {Logs.RequestOptions} requestOptions - Request-specific configuration.
      *
-     * @throws {@link RivetClient.InternalError}
-     * @throws {@link RivetClient.RateLimitError}
-     * @throws {@link RivetClient.ForbiddenError}
-     * @throws {@link RivetClient.UnauthorizedError}
-     * @throws {@link RivetClient.NotFoundError}
-     * @throws {@link RivetClient.BadRequestError}
+     * @throws {@link Rivet.InternalError}
+     * @throws {@link Rivet.RateLimitError}
+     * @throws {@link Rivet.ForbiddenError}
+     * @throws {@link Rivet.UnauthorizedError}
+     * @throws {@link Rivet.NotFoundError}
+     * @throws {@link Rivet.BadRequestError}
      *
      * @example
      *     await client.actor.logs.get("d5e9c84f-c2b2-4bf4-b4b0-7ffd7a9ffc32", {
@@ -53,9 +55,9 @@ export class Logs {
      */
     public async get(
         actor: string,
-        request: RivetClient.actor.GetActorLogsRequestQuery,
+        request: Rivet.actor.GetActorLogsRequestQuery,
         requestOptions?: Logs.RequestOptions
-    ): Promise<RivetClient.actor.GetActorLogsResponse> {
+    ): Promise<Rivet.actor.GetActorLogsResponse> {
         const { project, environment, stream, watchIndex } = request;
         const _queryParams: Record<string, string | string[] | object | object[]> = {};
         if (project != null) {
@@ -73,7 +75,7 @@ export class Logs {
 
         const _response = await (this._options.fetcher ?? core.fetcher)({
             url: urlJoin(
-                (await core.Supplier.get(this._options.environment)) ?? environments.RivetClientEnvironment.Production,
+                (await core.Supplier.get(this._options.environment)) ?? environments.RivetEnvironment.Production,
                 `/actors/${encodeURIComponent(actor)}/logs`
             ),
             method: "GET",
@@ -82,6 +84,7 @@ export class Logs {
                 "X-Fern-Language": "JavaScript",
                 "X-Fern-Runtime": core.RUNTIME.type,
                 "X-Fern-Runtime-Version": core.RUNTIME.version,
+                ...requestOptions?.headers,
             },
             contentType: "application/json",
             queryParameters: _queryParams,
@@ -103,7 +106,7 @@ export class Logs {
         if (_response.error.reason === "status-code") {
             switch (_response.error.statusCode) {
                 case 500:
-                    throw new RivetClient.InternalError(
+                    throw new Rivet.InternalError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -113,7 +116,7 @@ export class Logs {
                         })
                     );
                 case 429:
-                    throw new RivetClient.RateLimitError(
+                    throw new Rivet.RateLimitError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -123,7 +126,7 @@ export class Logs {
                         })
                     );
                 case 403:
-                    throw new RivetClient.ForbiddenError(
+                    throw new Rivet.ForbiddenError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -133,7 +136,7 @@ export class Logs {
                         })
                     );
                 case 408:
-                    throw new RivetClient.UnauthorizedError(
+                    throw new Rivet.UnauthorizedError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -143,7 +146,7 @@ export class Logs {
                         })
                     );
                 case 404:
-                    throw new RivetClient.NotFoundError(
+                    throw new Rivet.NotFoundError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -153,7 +156,7 @@ export class Logs {
                         })
                     );
                 case 400:
-                    throw new RivetClient.BadRequestError(
+                    throw new Rivet.BadRequestError(
                         serializers.ErrorBody.parseOrThrow(_response.error.body, {
                             unrecognizedObjectKeys: "passthrough",
                             allowUnrecognizedUnionMembers: true,
@@ -163,7 +166,7 @@ export class Logs {
                         })
                     );
                 default:
-                    throw new errors.RivetClientError({
+                    throw new errors.RivetError({
                         statusCode: _response.error.statusCode,
                         body: _response.error.body,
                     });
@@ -172,20 +175,25 @@ export class Logs {
 
         switch (_response.error.reason) {
             case "non-json":
-                throw new errors.RivetClientError({
+                throw new errors.RivetError({
                     statusCode: _response.error.statusCode,
                     body: _response.error.rawBody,
                 });
             case "timeout":
-                throw new errors.RivetClientTimeoutError();
+                throw new errors.RivetTimeoutError("Timeout exceeded when calling GET /actors/{actor}/logs.");
             case "unknown":
-                throw new errors.RivetClientError({
+                throw new errors.RivetError({
                     message: _response.error.errorMessage,
                 });
         }
     }
 
-    protected async _getAuthorizationHeader(): Promise<string> {
-        return `Bearer ${await core.Supplier.get(this._options.token)}`;
+    protected async _getAuthorizationHeader(): Promise<string | undefined> {
+        const bearer = await core.Supplier.get(this._options.token);
+        if (bearer != null) {
+            return `Bearer ${bearer}`;
+        }
+
+        return undefined;
     }
 }

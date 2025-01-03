@@ -1,14 +1,13 @@
 use std::{
 	collections::HashMap,
-	os::fd::AsRawFd,
-	path::{Path, PathBuf},
+	path::Path,
 	result::Result::{Err, Ok},
 	sync::Arc,
 	thread::JoinHandle,
 	time::Duration,
 };
 
-use actor_kv::ActorKv;
+use pegboard_actor_kv::ActorKv;
 use anyhow::*;
 use deno_core::{v8_set_flags, JsRuntime};
 use deno_runtime::worker::MainWorkerTerminateHandle;
@@ -41,6 +40,8 @@ enum Packet {
 /// Manager port to connect to.
 const THREAD_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const PING_INTERVAL: Duration = Duration::from_secs(1);
+// 7 day logs retention
+const LOGS_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -52,7 +53,9 @@ async fn main() -> Result<()> {
 		.context("`working_path` arg required")?;
 	let working_path = Path::new(&working_path);
 
-	redirect_logs(working_path.join("log")).await?;
+	pegboard_logs::Logs::new(working_path.join("logs"), LOGS_RETENTION)
+		.start()
+		.await?;
 
 	let config_data = fs::read_to_string(working_path.join("config.json")).await?;
 	let config = serde_json::from_str::<Config>(&config_data)?;
@@ -60,6 +63,8 @@ async fn main() -> Result<()> {
 	// Start FDB network thread
 	let _network = unsafe { fdb::boot() };
 	tokio::spawn(utils::fdb_health_check(config.clone()));
+
+	tracing::info!(pid=%std::process::id(), "starting");
 
 	// Write PID to file
 	fs::write(
@@ -94,7 +99,9 @@ async fn main() -> Result<()> {
 	};
 
 	// Write exit code
-	if res.is_err() {
+	if let Err(err) = &res {
+		tracing::error!(?err);
+
 		fs::write(working_path.join("exit-code"), 1.to_string().as_bytes()).await?;
 	}
 
@@ -186,17 +193,18 @@ async fn handle_connection(
 			runner_protocol::ToRunner::Signal {
 				actor_id,
 				signal,
-				persist_state,
+				persist_storage,
 			} => {
 				if let Some(signal_tx) = actors.read().await.get(&actor_id) {
 					// Tell actor thread to stop. Removing the actor is handled in the tokio task above.
 					signal_tx
-						.try_send((signal, persist_state))
+						.try_send((signal, persist_storage))
 						.context("failed to send stop signal to actor thread watcher")?;
 				} else {
 					tracing::warn!("Actor {actor_id} not found for stopping");
 				}
 			}
+			runner_protocol::ToRunner::Terminate => bail!("Received terminate"),
 		}
 	}
 }
@@ -258,11 +266,11 @@ async fn watch_thread(
 	drop(terminate_rx);
 
 	// Wait for either the thread to stop or a signal to be received
-	let persist_state = tokio::select! {
+	let persist_storage = tokio::select! {
 		biased;
 		_ = poll_thread(&handle) => true,
 		res = signal_rx.recv() => {
-			let Some((_signal, persist_state)) = res else {
+			let Some((_signal, persist_storage)) = res else {
 				tracing::error!(?actor_id, "failed to receive signal");
 				fatal_tx.send(()).expect("receiver cannot be dropped");
 				return;
@@ -273,7 +281,7 @@ async fn watch_thread(
 				terminate_handle.terminate();
 			}
 
-			persist_state
+			persist_storage
 		}
 	};
 
@@ -283,7 +291,7 @@ async fn watch_thread(
 	}
 
 	// Remove state
-	if !persist_state {
+	if !persist_storage {
 		let db = match utils::fdb_handle(&config) {
 			Ok(db) => db,
 			Err(err) => {
@@ -326,22 +334,6 @@ fn cleanup_thread(actor_id: Uuid, handle: JoinHandle<Result<()>>, fatal_tx: &wat
 		Err(_) => fatal_tx.send(()).expect("receiver cannot be dropped"),
 		_ => {}
 	}
-}
-
-async fn redirect_logs(log_file_path: PathBuf) -> Result<()> {
-	tracing::info!("Redirecting all logs to {}", log_file_path.display());
-	let log_file = fs::OpenOptions::new()
-		.write(true)
-		.create(true)
-		.append(true)
-		.open(log_file_path)
-		.await?;
-	let log_fd = log_file.as_raw_fd();
-
-	nix::unistd::dup2(log_fd, nix::libc::STDOUT_FILENO)?;
-	nix::unistd::dup2(log_fd, nix::libc::STDERR_FILENO)?;
-
-	Ok(())
 }
 
 fn init_tracing() {

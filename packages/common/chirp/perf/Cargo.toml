@@ -12,7 +12,7 @@ types-proto.workspace = true
 rivet-metrics.workspace = true
 rivet-pools.workspace = true
 thiserror = "1.0"
-tokio = { version = "1.36", features = ["full", "tracing"] }
+tokio = { version = "1.40", features = ["full", "tracing"] }
 tracing = "0.1"
 rivet-env.workspace = true
 
@@ -23,7 +23,6 @@ features = ["v4", "serde"]
 [dependencies.redis]
 # TODO: https://github.com/rivet-gg/rivet/issues/508
 workspace = true
-default-features = false
 features = [
 	"keep-alive",
 	"aio",

@@ -62,7 +62,8 @@ pub(crate) async fn cluster_datacenter_tls_issue(
 				common_name: domain_main.to_string(),
 				subject_alternative_names: vec![format!("*.{datacenter_id}.{domain_main}")],
 			}),
-			removed::<Activity<Order>>(), // Old Job certs
+			// Old job certs
+			removed::<Activity<Order>>(),
 			// New job certs
 			v(2).activity(OrderInput {
 				renew: input.renew,
@@ -77,6 +78,9 @@ pub(crate) async fn cluster_datacenter_tls_issue(
 		))
 		.await?;
 
+	// Insert with old job certs
+	ctx.removed::<Activity<InsertDb>>().await?;
+	// Insert with new job certs
 	ctx.activity(InsertDbInput {
 		datacenter_id: input.datacenter_id,
 		gg_cert: gg_cert.cert,
